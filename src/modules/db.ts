@@ -139,3 +139,16 @@ export function listSchemaObjects(db: RemoteDatabase): Promise<SchemaObject[]> {
 export function explainQueryPlan(db: RemoteDatabase, sql: string): Promise<ExplainNode[]> {
     return db.run<ExplainNode>(`EXPLAIN QUERY PLAN ${sql}`);
 }
+
+/** Table/view -> column names, for editor autocomplete. One query for the whole database. */
+export async function getSchemaMap(db: RemoteDatabase): Promise<Record<string, string[]>> {
+    const pairs = await db.run<{ tbl: string; col: string }>(
+        "SELECT m.name AS tbl, p.name AS col FROM sqlite_master m " +
+            "JOIN pragma_table_xinfo(m.name) p " +
+            "WHERE m.type IN ('table','view') AND m.name NOT LIKE 'sqlite_%' AND p.hidden != 1 " +
+            "ORDER BY m.name",
+    );
+    const map: Record<string, string[]> = {};
+    for (const { tbl, col } of pairs) (map[tbl] ??= []).push(col);
+    return map;
+}

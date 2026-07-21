@@ -5,6 +5,7 @@ import {
     connect,
     type ExplainNode,
     explainQueryPlan,
+    getSchemaMap,
     getTableSchema,
     listSchemaObjects,
     listTables,
@@ -42,6 +43,7 @@ export interface State {
     schemaLoading: boolean;
     schemaError: string | null;
     structureColumns: Record<string, ColumnInfo[]>;
+    schemaMap: Record<string, string[]>;
 
     selectedCell: SelectedCell | null;
 
@@ -80,6 +82,7 @@ function initialState(): State {
         schemaLoading: false,
         schemaError: null,
         structureColumns: {},
+        schemaMap: {},
 
         selectedCell: null,
 
@@ -134,12 +137,14 @@ const store = createStore({
                 const conn = await connect(url);
                 state.db = conn;
                 state.recentUrls = rememberUrl(url);
-                const [tables, schema] = await Promise.all([
+                const [tables, schema, schemaMap] = await Promise.all([
                     listTables(conn),
                     listSchemaObjects(conn),
+                    getSchemaMap(conn),
                 ]);
                 state.tables = tables;
                 state.schemaObjects = schema;
+                state.schemaMap = schemaMap;
                 state.structureColumns = {};
                 state.schemaError = null;
                 resetTableState(state);
@@ -158,6 +163,7 @@ const store = createStore({
             state.tables = [];
             state.schemaObjects = [];
             state.structureColumns = {};
+            state.schemaMap = {};
             resetTableState(state);
         },
 

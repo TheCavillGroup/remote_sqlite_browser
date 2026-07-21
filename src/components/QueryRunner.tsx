@@ -1,6 +1,7 @@
 import type { ExplainNode } from "../modules/db.ts";
 import { executeQuery, explainQuery, setQuerySql, useStore } from "../state/store.ts";
 import { ResultsTable } from "./ResultsTable.tsx";
+import { SqlEditor } from "./SqlEditor.tsx";
 
 function ExplainTree({ nodes, parent = 0, depth = 0 }: {
     nodes: ExplainNode[];
@@ -30,24 +31,15 @@ export function QueryRunner() {
     const queryColumns = useStore((s) => s.queryColumns);
     const explainResult = useStore((s) => s.explainResult);
     const explainError = useStore((s) => s.explainError);
-
-    function onKeyDown(e: KeyboardEvent) {
-        if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-            e.preventDefault();
-            executeQuery();
-        }
-    }
+    const schemaMap = useStore((s) => s.schemaMap);
 
     return (
         <div class="flex h-full flex-col p-3">
-            <textarea
+            <SqlEditor
                 value={querySql}
-                onInput={(e) => setQuerySql((e.target as HTMLTextAreaElement).value)}
-                onKeyDown={onKeyDown}
-                rows={6}
-                spellcheck={false}
-                class="w-full rounded border border-gray-300 p-2 font-mono text-sm"
-                placeholder="SELECT * FROM my_table;"
+                onChange={setQuerySql}
+                onRun={() => executeQuery()}
+                schema={schemaMap}
             />
             <div class="mt-2 flex items-center gap-2">
                 <button
