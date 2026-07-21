@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "preact/hooks";
 import { connectTo, disconnect, setWsUrl, useStore } from "../state/store.ts";
 
 function Spinner() {
@@ -16,14 +17,35 @@ export function ConnectionBar() {
     const recentUrls = useStore((s) => s.recentUrls);
 
     const active = status === "connected" || status === "reconnecting";
+    const editable = status === "idle";
+
+    const [menuOpen, setMenuOpen] = useState(false);
+    const fieldRef = useRef<HTMLDivElement | null>(null);
+
+    // Close the recent-connections menu on any click outside it.
+    useEffect(() => {
+        if (!menuOpen) return;
+        function onDocMouseDown(e: MouseEvent) {
+            if (fieldRef.current && !fieldRef.current.contains(e.target as Node)) {
+                setMenuOpen(false);
+            }
+        }
+        document.addEventListener("mousedown", onDocMouseDown);
+        return () => document.removeEventListener("mousedown", onDocMouseDown);
+    }, [menuOpen]);
 
     function onSubmit(e: SubmitEvent) {
         e.preventDefault();
         if (active) {
             disconnect();
-        } else if (status === "idle" && wsUrl.trim() !== "") {
+        } else if (editable && wsUrl.trim() !== "") {
             connectTo(wsUrl.trim());
         }
+    }
+
+    function pickRecent(url: string) {
+        setMenuOpen(false);
+        connectTo(url);
     }
 
     const buttonColor = status === "reconnecting"
@@ -40,24 +62,67 @@ export function ConnectionBar() {
         ? "Disconnect"
         : "Connect";
 
+    const showRecentToggle = editable && recentUrls.length > 0;
+
     return (
         <form
             onSubmit={onSubmit}
             class="flex flex-wrap items-center gap-2 border-b border-gray-200 bg-white px-4 py-2"
         >
             <span class="text-sm font-semibold text-gray-800">Remote SQLite Viewer</span>
-            <input
-                type="text"
-                list="recent-urls"
-                value={wsUrl}
-                onInput={(e) => setWsUrl((e.target as HTMLInputElement).value)}
-                disabled={status !== "idle"}
-                placeholder="ws://localhost:8090/sql"
-                class="min-w-64 flex-1 rounded border border-gray-300 px-2 py-1 text-sm font-mono disabled:bg-gray-100 disabled:text-gray-500"
-            />
-            <datalist id="recent-urls">
-                {recentUrls.map((u) => <option key={u} value={u} />)}
-            </datalist>
+            <div ref={fieldRef} class="relative flex min-w-64 flex-1 items-center">
+                <input
+                    type="text"
+                    value={wsUrl}
+                    onInput={(e) => setWsUrl((e.target as HTMLInputElement).value)}
+                    disabled={!editable}
+                    placeholder="ws://localhost:8090/sql"
+                    class={`w-full rounded border border-gray-300 py-1 pl-2 text-sm font-mono disabled:bg-gray-100 disabled:text-gray-500 ${
+                        showRecentToggle ? "pr-8" : "pr-2"
+                    }`}
+                />
+                {showRecentToggle && (
+                    <button
+                        type="button"
+                        onClick={() => setMenuOpen((o) => !o)}
+                        title="Recent connections"
+                        aria-label="Recent connections"
+                        class="absolute right-1 flex h-6 w-6 items-center justify-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+                    >
+                        <svg
+                            class={`h-4 w-4 transition-transform ${menuOpen ? "rotate-180" : ""}`}
+                            viewBox="0 0 20 20"
+                            fill="currentColor"
+                            aria-hidden="true"
+                        >
+                            <path
+                                fill-rule="evenodd"
+                                d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
+                                clip-rule="evenodd"
+                            />
+                        </svg>
+                    </button>
+                )}
+                {menuOpen && showRecentToggle && (
+                    <ul class="absolute inset-x-0 top-full z-20 mt-1 max-h-60 overflow-auto rounded border border-gray-200 bg-white py-1 shadow-lg">
+                        <li class="px-3 py-1 text-xs font-semibold uppercase tracking-wide text-gray-400">
+                            Recent connections
+                        </li>
+                        {recentUrls.map((u) => (
+                            <li key={u}>
+                                <button
+                                    type="button"
+                                    onClick={() => pickRecent(u)}
+                                    title={u}
+                                    class="block w-full truncate px-3 py-1.5 text-left font-mono text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-700"
+                                >
+                                    {u}
+                                </button>
+                            </li>
+                        ))}
+                    </ul>
+                )}
+            </div>
             <button
                 type="submit"
                 disabled={status === "connecting"}

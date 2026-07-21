@@ -1,7 +1,40 @@
+import { useState } from "preact/hooks";
 import type { ExplainNode } from "../modules/db.ts";
-import { executeQuery, explainQuery, setQuerySql, useStore } from "../state/store.ts";
+import { executeQuery, explainQuery, generateTypes, setQuerySql, useStore } from "../state/store.ts";
 import { ResultsTable } from "./ResultsTable.tsx";
 import { SqlEditor } from "./SqlEditor.tsx";
+
+function GeneratedCode({ code }: { code: string }) {
+    const [copied, setCopied] = useState(false);
+
+    function copy() {
+        navigator.clipboard.writeText(code).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+        }, () => {/* clipboard blocked — ignore */});
+    }
+
+    return (
+        <div class="mt-3 overflow-hidden rounded-lg border border-gray-200 bg-gray-50">
+            <div class="flex items-center justify-between border-b border-gray-200 px-3 py-2">
+                <span class="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                    TypeScript
+                </span>
+                <button
+                    type="button"
+                    onClick={copy}
+                    class="rounded border border-gray-300 bg-white px-2 py-0.5 text-xs font-medium text-gray-700 hover:bg-gray-100"
+                >
+                    {copied ? "Copied!" : "Copy"}
+                </button>
+            </div>
+            <pre class="overflow-x-auto p-3 font-mono text-xs leading-5 text-gray-800">{code}</pre>
+            <p class="border-t border-gray-200 px-3 py-1.5 text-[11px] text-gray-400">
+                Types inferred from up to 100 sampled rows — nullability is best-effort.
+            </p>
+        </div>
+    );
+}
 
 function opStyle(op: string): string {
     switch (op) {
@@ -102,6 +135,8 @@ export function QueryRunner() {
     const queryColumns = useStore((s) => s.queryColumns);
     const explainResult = useStore((s) => s.explainResult);
     const explainError = useStore((s) => s.explainError);
+    const generatedCode = useStore((s) => s.generatedCode);
+    const generateError = useStore((s) => s.generateError);
     const schemaMap = useStore((s) => s.schemaMap);
 
     return (
@@ -129,6 +164,14 @@ export function QueryRunner() {
                 >
                     Explain
                 </button>
+                <button
+                    type="button"
+                    onClick={() => generateTypes()}
+                    disabled={queryLoading}
+                    class="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50"
+                >
+                    Generate TS
+                </button>
                 <span class="text-xs text-gray-400">Ctrl/Cmd+Enter to run</span>
             </div>
             {queryError && (
@@ -141,7 +184,13 @@ export function QueryRunner() {
                     {explainError}
                 </div>
             )}
-            {explainResult !== null && (
+            {generateError && (
+                <div class="mt-3 rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
+                    {generateError}
+                </div>
+            )}
+            {generatedCode !== null && <GeneratedCode code={generatedCode} />}
+            {generatedCode === null && explainResult !== null && (
                 <div class="mt-3 overflow-auto rounded-lg border border-gray-200 bg-gray-50 p-3">
                     <div class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
                         Query Plan
@@ -151,7 +200,7 @@ export function QueryRunner() {
                         : <ExplainTree nodes={explainResult} />}
                 </div>
             )}
-            {explainResult === null && queryResult !== null && (
+            {generatedCode === null && explainResult === null && queryResult !== null && (
                 <div class="mt-3 rounded border border-gray-200 md:min-h-0 md:flex-1 md:overflow-auto">
                     <ResultsTable columns={queryColumns} rows={queryResult} />
                 </div>

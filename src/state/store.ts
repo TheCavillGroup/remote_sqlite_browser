@@ -10,11 +10,13 @@ import {
     listSchemaObjects,
     listTables,
     runQuery,
+    sampleRowsForTypes,
     type SchemaObject,
     searchTableRowCount,
     searchTableRows,
     type TableInfo,
 } from "../modules/db.ts";
+import { generateRunSnippet } from "../modules/tsgen.ts";
 
 const LAST_URL_KEY = "remote-sqlite:last-url";
 const RECENT_URLS_KEY = "remote-sqlite:recent-urls";
@@ -72,6 +74,8 @@ export interface State {
     queryLoading: boolean;
     explainResult: ExplainNode[] | null;
     explainError: string | null;
+    generatedCode: string | null;
+    generateError: string | null;
 }
 
 function initialState(): State {
@@ -111,6 +115,8 @@ function initialState(): State {
         queryLoading: false,
         explainResult: null,
         explainError: null,
+        generatedCode: null,
+        generateError: null,
     };
 }
 
@@ -284,6 +290,8 @@ const store = createStore({
             state.queryError = null;
             state.explainResult = null;
             state.explainError = null;
+            state.generatedCode = null;
+            state.generateError = null;
             state.selectedCell = null;
             try {
                 const result = await runQuery(conn, state.querySql);
@@ -303,11 +311,31 @@ const store = createStore({
             state.queryLoading = true;
             state.explainError = null;
             state.queryError = null;
+            state.generatedCode = null;
+            state.generateError = null;
             try {
                 state.explainResult = await explainQueryPlan(conn, state.querySql);
             } catch (err) {
                 state.explainError = String(err);
                 state.explainResult = null;
+            } finally {
+                state.queryLoading = false;
+            }
+        },
+
+        async generateTypes(state: State) {
+            const conn = state.db;
+            if (!conn) return;
+            state.queryLoading = true;
+            state.generateError = null;
+            state.explainResult = null;
+            state.explainError = null;
+            try {
+                const rows = await sampleRowsForTypes(conn, state.querySql);
+                state.generatedCode = generateRunSnippet(state.querySql, rows);
+            } catch (err) {
+                state.generateError = String(err);
+                state.generatedCode = null;
             } finally {
                 state.queryLoading = false;
             }
@@ -496,6 +524,7 @@ export const {
     setQuerySql,
     executeQuery,
     explainQuery,
+    generateTypes,
 } = store.actions;
 
 export const selectConnected = (s: State) => s.status === "connected";

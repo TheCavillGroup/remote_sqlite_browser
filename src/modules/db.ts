@@ -125,6 +125,20 @@ export function runQuery(db: RemoteDatabase, sql: string): Promise<Row[]> {
     return db.run<Row>(sql);
 }
 
+/**
+ * Sample rows from an arbitrary query for TS type inference. Wraps the query as a subquery so we
+ * can cap the sample with LIMIT; falls back to running it raw for statements that can't be wrapped
+ * (PRAGMA, etc.). `limit` is an internal constant, never user input, so interpolation is safe.
+ */
+export async function sampleRowsForTypes(db: RemoteDatabase, sql: string, limit = 100): Promise<Row[]> {
+    const trimmed = sql.replace(/;\s*$/, "").trim();
+    try {
+        return await db.run<Row>(`SELECT * FROM (\n${trimmed}\n) LIMIT ${limit}`);
+    } catch {
+        return await runQuery(db, sql);
+    }
+}
+
 /** Every table/view/index/trigger with its CREATE sql; excludes internal sqlite_* objects (incl. autoindexes). */
 export function listSchemaObjects(db: RemoteDatabase): Promise<SchemaObject[]> {
     return db.run<SchemaObject>(
