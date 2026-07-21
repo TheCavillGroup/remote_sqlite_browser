@@ -5,10 +5,10 @@ import { Sidebar } from "./components/Sidebar.tsx";
 import { StructureView } from "./components/StructureView.tsx";
 import { TabBar } from "./components/TabBar.tsx";
 import { TableBrowser } from "./components/TableBrowser.tsx";
-import { selectConnected, useStore } from "./state/store.ts";
+import { selectHasSession, useStore } from "./state/store.ts";
 
 export function App() {
-    const connected = useStore(selectConnected);
+    const connected = useStore(selectHasSession);
     const activeTab = useStore((s) => s.activeTab);
 
     return (

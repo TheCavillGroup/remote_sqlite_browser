@@ -21,15 +21,25 @@ const RECENT_URLS_KEY = "remote-sqlite:recent-urls";
 
 export type Tab = "structure" | "browse" | "query";
 
+export type ConnStatus = "idle" | "connecting" | "connected" | "reconnecting";
+
 export interface SelectedCell {
     column: string;
     value: unknown;
 }
 
+/** The result of opening a connection and loading its schema. */
+interface EstablishResult {
+    conn: RemoteDatabase;
+    tables: TableInfo[];
+    schemaObjects: SchemaObject[];
+    schemaMap: Record<string, string[]>;
+}
+
 export interface State {
     wsUrl: string;
     db: RemoteDatabase | null;
-    connecting: boolean;
+    status: ConnStatus;
     connectError: string | null;
     recentUrls: string[];
 
@@ -68,7 +78,7 @@ function initialState(): State {
     return {
         wsUrl: localStorage.getItem(LAST_URL_KEY) ?? "ws://localhost:8090/sql",
         db: null,
-        connecting: false,
+        status: "idle",
         connectError: null,
         recentUrls: JSON.parse(localStorage.getItem(RECENT_URLS_KEY) ?? "[]"),
 
@@ -130,36 +140,59 @@ const store = createStore({
             state.wsUrl = url;
         },
 
-        async connectTo(state: State, url: string) {
-            state.connecting = true;
+        // Connection transitions are split into synchronous actions (rather than one async
+        // action) because global-store only emits a draft once, after an async action fully
+        // resolves — so "connecting"/"reconnecting" states would never render mid-flight.
+        // The async orchestration lives in the plain connectTo/disconnect functions below.
+        beginConnect(state: State, url: string) {
+            state.status = "connecting";
             state.connectError = null;
-            try {
-                const conn = await connect(url);
-                state.db = conn;
-                state.recentUrls = rememberUrl(url);
-                const [tables, schema, schemaMap] = await Promise.all([
-                    listTables(conn),
-                    listSchemaObjects(conn),
-                    getSchemaMap(conn),
-                ]);
-                state.tables = tables;
-                state.schemaObjects = schema;
-                state.schemaMap = schemaMap;
-                state.structureColumns = {};
-                state.schemaError = null;
-                resetTableState(state);
-                state.activeTab = "structure";
-            } catch (err) {
-                state.db = null;
-                state.connectError = String(err);
-            } finally {
-                state.connecting = false;
-            }
+            state.wsUrl = url;
         },
 
-        disconnect(state: State) {
+        connectSucceeded(state: State, payload: EstablishResult & { recentUrls: string[] }) {
+            state.db = payload.conn;
+            state.tables = payload.tables;
+            state.schemaObjects = payload.schemaObjects;
+            state.schemaMap = payload.schemaMap;
+            state.recentUrls = payload.recentUrls;
+            state.structureColumns = {};
+            state.schemaError = null;
+            state.connectError = null;
+            resetTableState(state);
+            state.activeTab = "structure";
+            state.status = "connected";
+        },
+
+        connectFailed(state: State, err: string) {
+            state.db = null;
+            state.status = "idle";
+            state.connectError = err;
+        },
+
+        beginReconnect(state: State) {
+            // Drop the dead handle so any interaction during reconnect no-ops instead of
+            // erroring; the stale rows/schema stay on screen until we reconnect.
+            state.db = null;
+            state.status = "reconnecting";
+            state.connectError = null;
+        },
+
+        reconnectSucceeded(state: State, payload: EstablishResult) {
+            state.db = payload.conn;
+            state.tables = payload.tables;
+            state.schemaObjects = payload.schemaObjects;
+            state.schemaMap = payload.schemaMap;
+            state.structureColumns = {};
+            state.connectError = null;
+            state.status = "connected";
+        },
+
+        finalizeDisconnect(state: State) {
             state.db?.close();
             state.db = null;
+            state.status = "idle";
+            state.connectError = null;
             state.tables = [];
             state.schemaObjects = [];
             state.structureColumns = {};
@@ -308,12 +341,149 @@ async function runRefreshTableRows(state: State) {
     }
 }
 
+// --- Connection lifecycle + automatic reconnection ---------------------------------------
+//
+// A liveness heartbeat (`SELECT 1`) polls the connection; if it fails we transition to
+// "reconnecting" and retry with exponential backoff until the server comes back (e.g. after
+// a redeploy). A generation counter invalidates any in-flight/scheduled work the moment the
+// user connects elsewhere or disconnects, so stale async results can't resurrect a session.
+
+const HEARTBEAT_MS = 8000;
+const HEARTBEAT_TIMEOUT_MS = 5000;
+const BASE_BACKOFF_MS = 1000;
+const MAX_BACKOFF_MS = 30000;
+
+let connGen = 0;
+let currentUrl: string | null = null;
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let reconnectAttempt = 0;
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("Timed out")), ms);
+        promise.then(
+            (v) => {
+                clearTimeout(timer);
+                resolve(v);
+            },
+            (e) => {
+                clearTimeout(timer);
+                reject(e);
+            },
+        );
+    });
+}
+
+async function establish(url: string): Promise<EstablishResult> {
+    const conn = await connect(url);
+    const [tables, schemaObjects, schemaMap] = await Promise.all([
+        listTables(conn),
+        listSchemaObjects(conn),
+        getSchemaMap(conn),
+    ]);
+    return { conn, tables, schemaObjects, schemaMap };
+}
+
+function clearTimers() {
+    if (heartbeatTimer !== null) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+    }
+    if (reconnectTimer !== null) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+    }
+}
+
+function startHeartbeat(gen: number) {
+    if (heartbeatTimer !== null) clearInterval(heartbeatTimer);
+    heartbeatTimer = setInterval(() => void heartbeat(gen), HEARTBEAT_MS);
+}
+
+async function heartbeat(gen: number) {
+    if (gen !== connGen) return;
+    const db = store.get().db;
+    if (!db) return;
+    try {
+        await withTimeout(db.run("SELECT 1"), HEARTBEAT_TIMEOUT_MS);
+    } catch {
+        if (gen === connGen) onConnectionLost(gen);
+    }
+}
+
+function onConnectionLost(gen: number) {
+    if (gen !== connGen) return;
+    if (heartbeatTimer !== null) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+    }
+    try {
+        store.get().db?.close();
+    } catch { /* already gone */ }
+    reconnectAttempt = 0;
+    store.actions.beginReconnect();
+    scheduleReconnect(gen, 0);
+}
+
+function scheduleReconnect(gen: number, delay: number) {
+    if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(() => void attemptReconnect(gen), delay);
+}
+
+async function attemptReconnect(gen: number) {
+    if (gen !== connGen || currentUrl === null) return;
+    try {
+        const result = await establish(currentUrl);
+        if (gen !== connGen) {
+            result.conn.close();
+            return;
+        }
+        reconnectAttempt = 0;
+        store.actions.reconnectSucceeded(result);
+        startHeartbeat(gen);
+        if (store.get().selectedTable) void store.actions.refreshTableRows();
+    } catch {
+        if (gen !== connGen) return;
+        reconnectAttempt += 1;
+        const delay = Math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * 2 ** Math.min(reconnectAttempt - 1, 5));
+        scheduleReconnect(gen, delay);
+    }
+}
+
+export async function connectTo(url: string) {
+    const gen = ++connGen;
+    clearTimers();
+    reconnectAttempt = 0;
+    currentUrl = url;
+    store.actions.beginConnect(url);
+    try {
+        const result = await establish(url);
+        if (gen !== connGen) {
+            result.conn.close();
+            return;
+        }
+        store.actions.connectSucceeded({ ...result, recentUrls: rememberUrl(url) });
+        startHeartbeat(gen);
+    } catch (err) {
+        if (gen !== connGen) return;
+        currentUrl = null;
+        store.actions.connectFailed(String(err));
+    }
+}
+
+export function disconnect() {
+    connGen += 1; // invalidate any in-flight connect / scheduled reconnect
+    clearTimers();
+    reconnectAttempt = 0;
+    currentUrl = null;
+    store.actions.finalizeDisconnect();
+}
+
 export const useStore = createUseStore(store);
 
 export const {
     setWsUrl,
-    connectTo,
-    disconnect,
     loadSchema,
     toggleStructureColumns,
     loadTable,
@@ -328,4 +498,5 @@ export const {
     explainQuery,
 } = store.actions;
 
-export const selectConnected = (s: State) => s.db !== null;
+export const selectConnected = (s: State) => s.status === "connected";
+export const selectHasSession = (s: State) => s.status === "connected" || s.status === "reconnecting";
