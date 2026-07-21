@@ -18,16 +18,16 @@ export function App() {
                 ? (
                     <>
                         <TabBar />
-                        <div class="flex flex-1 overflow-hidden">
+                        <div class="flex flex-1 flex-col overflow-hidden md:flex-row">
                             {activeTab === "structure" && (
-                                <main class="flex-1 overflow-hidden">
+                                <main class="min-h-0 flex-1 overflow-hidden">
                                     <StructureView />
                                 </main>
                             )}
                             {activeTab === "browse" && (
                                 <>
                                     <Sidebar />
-                                    <main class="flex-1 overflow-hidden">
+                                    <main class="min-h-0 flex-1 overflow-hidden">
                                         <TableBrowser />
                                     </main>
                                     <CellInspector />
@@ -35,7 +35,7 @@ export function App() {
                             )}
                             {activeTab === "query" && (
                                 <>
-                                    <main class="flex-1 overflow-hidden">
+                                    <main class="min-h-0 flex-1 overflow-hidden">
                                         <QueryRunner />
                                     </main>
                                     <CellInspector />

@@ -28,7 +28,7 @@ export function CellInspector() {
     const json = tryParseJson(cell.value);
 
     return (
-        <aside class="flex w-96 shrink-0 flex-col border-l border-gray-200 bg-white">
+        <aside class="flex max-h-[45vh] w-full shrink-0 flex-col border-t border-gray-200 bg-white md:max-h-none md:w-96 md:border-t-0 md:border-l">
             <div class="flex items-center justify-between border-b border-gray-200 px-3 py-2">
                 <span class="truncate font-mono text-sm font-semibold text-gray-800" title={cell.column}>
                     {cell.column}
