@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "preact/hooks";
 import { basicSetup, EditorView } from "codemirror";
 import { Compartment, EditorState, Prec } from "@codemirror/state";
-import { keymap } from "@codemirror/view";
+import { keymap, tooltips } from "@codemirror/view";
 import { sql, SQLite } from "@codemirror/lang-sql";
 
 interface Props {
@@ -18,7 +18,10 @@ function sqlExtension(schema: Record<string, string[]>) {
 
 const editorTheme = EditorView.theme({
     "&": { fontSize: "0.875rem" },
-    ".cm-content": { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" },
+    ".cm-content": {
+        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+        minHeight: "8rem",
+    },
     ".cm-scroller": { maxHeight: "240px" },
 });
 
@@ -55,6 +58,9 @@ export function SqlEditor({ value, onChange, onRun, schema }: Props) {
                 extensions: [
                     basicSetup,
                     runKeymap,
+                    // Render completion/hover tooltips on <body> so they aren't clipped by the
+                    // editor's own overflow (or its short height on the first line).
+                    tooltips({ parent: document.body }),
                     langCompartment.current.of(sqlExtension(schema)),
                     editorTheme,
                     EditorView.updateListener.of((update) => {

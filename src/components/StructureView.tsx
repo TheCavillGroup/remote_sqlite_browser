@@ -107,7 +107,7 @@ export function StructureView() {
     }
 
     return (
-        <div class="h-full overflow-auto">
+        <div class="md:h-full md:overflow-auto">
             {SECTIONS.map(({ type, title }) => {
                 const objects = schemaObjects.filter((o) => o.type === type);
                 return (

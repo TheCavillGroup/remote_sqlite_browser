@@ -34,7 +34,7 @@ export function QueryRunner() {
     const schemaMap = useStore((s) => s.schemaMap);
 
     return (
-        <div class="flex h-full flex-col p-3">
+        <div class="flex flex-col p-3 md:h-full">
             <SqlEditor
                 value={querySql}
                 onChange={setQuerySql}
@@ -81,7 +81,7 @@ export function QueryRunner() {
                 </div>
             )}
             {explainResult === null && queryResult !== null && (
-                <div class="mt-3 flex-1 overflow-auto rounded border border-gray-200">
+                <div class="mt-3 rounded border border-gray-200 md:min-h-0 md:flex-1 md:overflow-auto">
                     <ResultsTable columns={queryColumns} rows={queryResult} />
                 </div>
             )}

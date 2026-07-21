@@ -45,7 +45,7 @@ export function TableBrowser() {
     }
 
     return (
-        <div class="flex h-full flex-col">
+        <div class="flex flex-col md:h-full">
             <div class="border-b border-gray-200 p-3">
                 <h2 class="mb-2 font-mono text-sm font-semibold text-gray-800">{table}</h2>
                 {schema.length > 0 && (
@@ -100,7 +100,7 @@ export function TableBrowser() {
                     {rowsError}
                 </div>
             )}
-            <div class="flex-1 overflow-auto">
+            <div class="md:min-h-0 md:flex-1 md:overflow-auto">
                 <ResultsTable
                     columns={schema.map((c) => c.name)}
                     rows={rows}

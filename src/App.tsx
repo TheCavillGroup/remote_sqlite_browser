@@ -12,22 +12,22 @@ export function App() {
     const activeTab = useStore((s) => s.activeTab);
 
     return (
-        <div class="flex h-screen flex-col bg-white">
+        <div class="flex min-h-screen flex-col bg-white md:h-screen">
             <ConnectionBar />
             {connected
                 ? (
                     <>
                         <TabBar />
-                        <div class="flex flex-1 flex-col overflow-hidden md:flex-row">
+                        <div class="flex flex-1 flex-col md:flex-row md:overflow-hidden">
                             {activeTab === "structure" && (
-                                <main class="min-h-0 flex-1 overflow-hidden">
+                                <main class="flex-1 md:min-h-0 md:overflow-hidden">
                                     <StructureView />
                                 </main>
                             )}
                             {activeTab === "browse" && (
                                 <>
                                     <Sidebar />
-                                    <main class="min-h-0 flex-1 overflow-hidden">
+                                    <main class="flex-1 md:min-h-0 md:overflow-hidden">
                                         <TableBrowser />
                                     </main>
                                     <CellInspector />
@@ -35,7 +35,7 @@ export function App() {
                             )}
                             {activeTab === "query" && (
                                 <>
-                                    <main class="min-h-0 flex-1 overflow-hidden">
+                                    <main class="flex-1 md:min-h-0 md:overflow-hidden">
                                         <QueryRunner />
                                     </main>
                                     <CellInspector />
