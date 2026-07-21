@@ -3,6 +3,78 @@ import { executeQuery, explainQuery, setQuerySql, useStore } from "../state/stor
 import { ResultsTable } from "./ResultsTable.tsx";
 import { SqlEditor } from "./SqlEditor.tsx";
 
+function opStyle(op: string): string {
+    switch (op) {
+        case "SEARCH":
+            return "bg-blue-100 text-blue-700";
+        case "SCAN":
+            return "bg-sky-100 text-sky-700";
+        case "USE":
+            return "bg-purple-100 text-purple-700";
+        default:
+            return "bg-gray-200 text-gray-600";
+    }
+}
+
+/** Turn an EXPLAIN QUERY PLAN detail line into a badge + target + index/scan chips. */
+function PlanRow({ detail }: { detail: string }) {
+    const op = detail.split(/\s+/)[0];
+    const structured = op === "SEARCH" || op === "SCAN";
+    const usingIdx = detail.match(/USING (COVERING )?INDEX (\S+)/);
+    const usingPk = /USING INTEGER PRIMARY KEY/.test(detail);
+    const fullScan = op === "SCAN" && !usingIdx && !usingPk;
+    const constraint = detail.match(/\(([^)]*)\)\s*$/)?.[1] ?? null;
+    const rest = detail.slice(op.length).trim();
+
+    let target: string | null = null;
+    if (structured) {
+        const after = rest;
+        const cut = after.search(/\s+USING\b|\s*\(/);
+        target = (cut === -1 ? after : after.slice(0, cut)).replace(/^TABLE\s+/i, "").trim() || null;
+    }
+
+    return (
+        <div
+            title={detail}
+            class="flex flex-wrap items-center gap-1.5 rounded px-1.5 py-1 hover:bg-white"
+        >
+            <span
+                class={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${opStyle(op)}`}
+            >
+                {op}
+            </span>
+            {structured
+                ? (
+                    <>
+                        {target && (
+                            <span class="font-mono text-xs font-semibold text-gray-800">{target}</span>
+                        )}
+                        {usingIdx && (
+                            <span class="rounded bg-emerald-50 px-1.5 py-0.5 font-mono text-[11px] text-emerald-700">
+                                {usingIdx[1] ? "covering index " : "index "}
+                                {usingIdx[2]}
+                            </span>
+                        )}
+                        {usingPk && (
+                            <span class="rounded bg-indigo-50 px-1.5 py-0.5 font-mono text-[11px] text-indigo-700">
+                                primary key
+                            </span>
+                        )}
+                        {fullScan && (
+                            <span class="rounded bg-amber-100 px-1.5 py-0.5 text-[11px] font-medium text-amber-800">
+                                full scan
+                            </span>
+                        )}
+                        {constraint && (
+                            <span class="font-mono text-[11px] text-gray-400">({constraint})</span>
+                        )}
+                    </>
+                )
+                : <span class="text-xs text-gray-600">{rest}</span>}
+        </div>
+    );
+}
+
 function ExplainTree({ nodes, parent = 0, depth = 0 }: {
     nodes: ExplainNode[];
     parent?: number;
@@ -11,11 +83,10 @@ function ExplainTree({ nodes, parent = 0, depth = 0 }: {
     const children = nodes.filter((n) => n.parent === parent);
     if (children.length === 0) return null;
     return (
-        <ul class={depth > 0 ? "ml-4 border-l border-gray-200 pl-3" : ""}>
+        <ul class={depth > 0 ? "ml-3 space-y-0.5 border-l border-gray-200 pl-3" : "space-y-0.5"}>
             {children.map((n) => (
-                <li key={n.id} class="py-0.5 font-mono text-xs text-gray-800">
-                    <span class="text-gray-400">↳ </span>
-                    {n.detail}
+                <li key={n.id}>
+                    <PlanRow detail={n.detail} />
                     <ExplainTree nodes={nodes} parent={n.id} depth={depth + 1} />
                 </li>
             ))}
@@ -71,8 +142,8 @@ export function QueryRunner() {
                 </div>
             )}
             {explainResult !== null && (
-                <div class="mt-3 overflow-auto rounded border border-gray-200 p-3">
-                    <div class="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                <div class="mt-3 overflow-auto rounded-lg border border-gray-200 bg-gray-50 p-3">
+                    <div class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
                         Query Plan
                     </div>
                     {explainResult.length === 0
