@@ -3,7 +3,11 @@ import preact from "@preact/preset-vite";
 import tailwindcss from "@tailwindcss/vite";
 import deno from "@deno/vite-plugin";
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+  // In prod the app is served behind Traefik under /sqlite (which stripprefixes back to /),
+  // so built asset URLs must be prefixed with /sqlite/ or the browser requests them at the
+  // domain root and Traefik 404s them. Dev server stays at root.
+  base: command === "build" ? "/sqlite/" : "/",
   plugins: [deno(), preact(), tailwindcss()],
   server: { port: 5173 },
   resolve: {
@@ -16,4 +20,4 @@ export default defineConfig({
       { find: "npm:preact@^10.27.0/hooks", replacement: "preact/hooks" },
     ],
   },
-});
+}));
