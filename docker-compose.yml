@@ -1,0 +1,16 @@
+services:
+    domain-panel:
+        build: .
+        restart: unless-stopped
+        networks:
+            - traefik-proxy
+        labels:
+            - "traefik.enable=true"
+            - "traefik.http.routers.sqlite-browser.rule=PathPrefix(`/sqlite`)"
+            - "traefik.http.services.sqlite-browser.loadbalancer.server.port=8000"
+            - "traefik.http.middlewares.stripprefix-sqlite-browser.stripprefix.prefixes=/sqlite"
+            - "traefik.http.routers.sqlite-browser.middlewares=stripprefix-sqlite-browser"
+            - "traefik.http.routers.sqlite-browser.entrypoints=docker,lan,canva"
+networks:
+    traefik-proxy:
+        external: true
