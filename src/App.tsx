@@ -1,21 +1,48 @@
+import { CellInspector } from "./components/CellInspector.tsx";
 import { ConnectionBar } from "./components/ConnectionBar.tsx";
 import { QueryRunner } from "./components/QueryRunner.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
+import { StructureView } from "./components/StructureView.tsx";
+import { TabBar } from "./components/TabBar.tsx";
 import { TableBrowser } from "./components/TableBrowser.tsx";
-import * as store from "./state/store.ts";
+import { selectConnected, useStore } from "./state/store.ts";
 
 export function App() {
+    const connected = useStore(selectConnected);
+    const activeTab = useStore((s) => s.activeTab);
+
     return (
         <div class="flex h-screen flex-col bg-white">
             <ConnectionBar />
-            {store.connected.value
+            {connected
                 ? (
-                    <div class="flex flex-1 overflow-hidden">
-                        <Sidebar />
-                        <main class="flex-1 overflow-hidden">
-                            {store.activeTab.value === "query" ? <QueryRunner /> : <TableBrowser />}
-                        </main>
-                    </div>
+                    <>
+                        <TabBar />
+                        <div class="flex flex-1 overflow-hidden">
+                            {activeTab === "structure" && (
+                                <main class="flex-1 overflow-hidden">
+                                    <StructureView />
+                                </main>
+                            )}
+                            {activeTab === "browse" && (
+                                <>
+                                    <Sidebar />
+                                    <main class="flex-1 overflow-hidden">
+                                        <TableBrowser />
+                                    </main>
+                                    <CellInspector />
+                                </>
+                            )}
+                            {activeTab === "query" && (
+                                <>
+                                    <main class="flex-1 overflow-hidden">
+                                        <QueryRunner />
+                                    </main>
+                                    <CellInspector />
+                                </>
+                            )}
+                        </div>
+                    </>
                 )
                 : (
                     <div class="flex flex-1 items-center justify-center text-sm text-gray-400">

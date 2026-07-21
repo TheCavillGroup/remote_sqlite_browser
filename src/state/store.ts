@@ -1,10 +1,15 @@
-import { computed, signal } from "@preact/signals";
+import { createStore, createUseStore } from "@tangerie/global-store";
 import { RemoteDatabase } from "@tangerie/remote-sqlite/client";
 import {
     type ColumnInfo,
     connect,
+    type ExplainNode,
+    explainQueryPlan,
     getTableSchema,
+    listSchemaObjects,
     listTables,
+    runQuery,
+    type SchemaObject,
     searchTableRowCount,
     searchTableRows,
     type TableInfo,
@@ -13,114 +18,308 @@ import {
 const LAST_URL_KEY = "remote-sqlite:last-url";
 const RECENT_URLS_KEY = "remote-sqlite:recent-urls";
 
-export const wsUrl = signal(localStorage.getItem(LAST_URL_KEY) ?? "ws://localhost:8090/sql");
-export const db = signal<RemoteDatabase | null>(null);
-export const connected = computed(() => db.value !== null);
-export const connecting = signal(false);
-export const connectError = signal<string | null>(null);
+export type Tab = "structure" | "browse" | "query";
 
-export const tables = signal<TableInfo[]>([]);
-export const selectedTable = signal<string | null>(null);
-export const selectedTableSchema = signal<ColumnInfo[]>([]);
+export interface SelectedCell {
+    column: string;
+    value: unknown;
+}
 
-export const activeTab = signal<"browse" | "query">("browse");
+export interface State {
+    wsUrl: string;
+    db: RemoteDatabase | null;
+    connecting: boolean;
+    connectError: string | null;
+    recentUrls: string[];
 
-export const pageSize = signal(50);
-export const pageOffset = signal(0);
-export const searchTerm = signal("");
-export const rows = signal<Record<string, unknown>[]>([]);
-export const totalRows = signal(0);
-export const rowsLoading = signal(false);
-export const rowsError = signal<string | null>(null);
+    tables: TableInfo[];
+    selectedTable: string | null;
+    selectedTableSchema: ColumnInfo[];
 
-export const querySql = signal("SELECT * FROM sqlite_master;");
-export const queryResult = signal<Record<string, unknown>[] | null>(null);
-export const queryColumns = signal<string[]>([]);
-export const queryError = signal<string | null>(null);
-export const queryLoading = signal(false);
+    activeTab: Tab;
 
-export const recentUrls = signal<string[]>(
-    JSON.parse(localStorage.getItem(RECENT_URLS_KEY) ?? "[]"),
-);
+    schemaObjects: SchemaObject[];
+    schemaLoading: boolean;
+    schemaError: string | null;
+    structureColumns: Record<string, ColumnInfo[]>;
+
+    selectedCell: SelectedCell | null;
+
+    pageSize: number;
+    pageOffset: number;
+    searchTerm: string;
+    rows: Record<string, unknown>[];
+    totalRows: number;
+    rowsLoading: boolean;
+    rowsError: string | null;
+
+    querySql: string;
+    queryResult: Record<string, unknown>[] | null;
+    queryColumns: string[];
+    queryError: string | null;
+    queryLoading: boolean;
+    explainResult: ExplainNode[] | null;
+    explainError: string | null;
+}
+
+function initialState(): State {
+    return {
+        wsUrl: localStorage.getItem(LAST_URL_KEY) ?? "ws://localhost:8090/sql",
+        db: null,
+        connecting: false,
+        connectError: null,
+        recentUrls: JSON.parse(localStorage.getItem(RECENT_URLS_KEY) ?? "[]"),
+
+        tables: [],
+        selectedTable: null,
+        selectedTableSchema: [],
+
+        activeTab: "structure",
+
+        schemaObjects: [],
+        schemaLoading: false,
+        schemaError: null,
+        structureColumns: {},
+
+        selectedCell: null,
+
+        pageSize: 50,
+        pageOffset: 0,
+        searchTerm: "",
+        rows: [],
+        totalRows: 0,
+        rowsLoading: false,
+        rowsError: null,
+
+        querySql: "SELECT * FROM sqlite_master;",
+        queryResult: null,
+        queryColumns: [],
+        queryError: null,
+        queryLoading: false,
+        explainResult: null,
+        explainError: null,
+    };
+}
 
 function rememberUrl(url: string) {
-    const next = [url, ...recentUrls.value.filter((u) => u !== url)].slice(0, 10);
-    recentUrls.value = next;
+    const recent: string[] = JSON.parse(localStorage.getItem(RECENT_URLS_KEY) ?? "[]");
+    const next = [url, ...recent.filter((u) => u !== url)].slice(0, 10);
     localStorage.setItem(RECENT_URLS_KEY, JSON.stringify(next));
     localStorage.setItem(LAST_URL_KEY, url);
+    return next;
 }
 
-function resetTableState() {
-    selectedTable.value = null;
-    selectedTableSchema.value = [];
-    pageOffset.value = 0;
-    searchTerm.value = "";
-    rows.value = [];
-    totalRows.value = 0;
-    rowsError.value = null;
+function resetTableState(state: State) {
+    state.selectedTable = null;
+    state.selectedTableSchema = [];
+    state.pageOffset = 0;
+    state.searchTerm = "";
+    state.rows = [];
+    state.totalRows = 0;
+    state.rowsError = null;
+    state.selectedCell = null;
 }
 
-export async function connectTo(url: string) {
-    connecting.value = true;
-    connectError.value = null;
-    try {
-        const conn = await connect(url);
-        db.value = conn;
-        rememberUrl(url);
-        tables.value = await listTables(conn);
-        resetTableState();
-        activeTab.value = "browse";
-    } catch (err) {
-        db.value = null;
-        connectError.value = String(err);
-    } finally {
-        connecting.value = false;
-    }
-}
+const store = createStore({
+    state: initialState,
+    actions: {
+        setWsUrl(state: State, url: string) {
+            state.wsUrl = url;
+        },
 
-export function disconnect() {
-    db.value?.close();
-    db.value = null;
-    tables.value = [];
-    resetTableState();
-}
+        async connectTo(state: State, url: string) {
+            state.connecting = true;
+            state.connectError = null;
+            try {
+                const conn = await connect(url);
+                state.db = conn;
+                state.recentUrls = rememberUrl(url);
+                const [tables, schema] = await Promise.all([
+                    listTables(conn),
+                    listSchemaObjects(conn),
+                ]);
+                state.tables = tables;
+                state.schemaObjects = schema;
+                state.structureColumns = {};
+                state.schemaError = null;
+                resetTableState(state);
+                state.activeTab = "structure";
+            } catch (err) {
+                state.db = null;
+                state.connectError = String(err);
+            } finally {
+                state.connecting = false;
+            }
+        },
 
-export async function loadTable(name: string) {
-    selectedTable.value = name;
-    pageOffset.value = 0;
-    searchTerm.value = "";
-    selectedTableSchema.value = [];
-    activeTab.value = "browse";
+        disconnect(state: State) {
+            state.db?.close();
+            state.db = null;
+            state.tables = [];
+            state.schemaObjects = [];
+            state.structureColumns = {};
+            resetTableState(state);
+        },
 
-    if (!db.value) return;
-    try {
-        selectedTableSchema.value = await getTableSchema(db.value, name);
-    } catch (err) {
-        rowsError.value = String(err);
-    }
-    await refreshTableRows();
-}
+        async loadSchema(state: State) {
+            const conn = state.db;
+            if (!conn) return;
+            state.schemaLoading = true;
+            state.schemaError = null;
+            try {
+                state.schemaObjects = await listSchemaObjects(conn);
+            } catch (err) {
+                state.schemaError = String(err);
+            } finally {
+                state.schemaLoading = false;
+            }
+        },
 
-export async function refreshTableRows() {
-    const conn = db.value;
-    const table = selectedTable.value;
+        async toggleStructureColumns(state: State, name: string) {
+            if (state.structureColumns[name]) {
+                delete state.structureColumns[name];
+                return;
+            }
+            const conn = state.db;
+            if (!conn) return;
+            try {
+                state.structureColumns[name] = await getTableSchema(conn, name);
+            } catch {
+                state.structureColumns[name] = [];
+            }
+        },
+
+        async loadTable(state: State, name: string) {
+            state.selectedTable = name;
+            state.pageOffset = 0;
+            state.searchTerm = "";
+            state.selectedTableSchema = [];
+            state.selectedCell = null;
+            state.activeTab = "browse";
+
+            const conn = state.db;
+            if (!conn) return;
+            try {
+                state.selectedTableSchema = await getTableSchema(conn, name);
+            } catch (err) {
+                state.rowsError = String(err);
+            }
+
+            await runRefreshTableRows(state);
+        },
+
+        async refreshTableRows(state: State) {
+            state.selectedCell = null;
+            await runRefreshTableRows(state);
+        },
+
+        setActiveTab(state: State, tab: Tab) {
+            state.activeTab = tab;
+        },
+
+        setSearchTerm(state: State, term: string) {
+            state.searchTerm = term;
+            state.pageOffset = 0;
+        },
+
+        setPageOffset(state: State, offset: number) {
+            state.pageOffset = Math.max(0, offset);
+        },
+
+        selectCell(state: State, column: string, value: unknown) {
+            state.selectedCell = { column, value };
+        },
+
+        clearSelectedCell(state: State) {
+            state.selectedCell = null;
+        },
+
+        setQuerySql(state: State, sql: string) {
+            state.querySql = sql;
+        },
+
+        async executeQuery(state: State) {
+            const conn = state.db;
+            if (!conn) return;
+            state.queryLoading = true;
+            state.queryError = null;
+            state.explainResult = null;
+            state.explainError = null;
+            state.selectedCell = null;
+            try {
+                const result = await runQuery(conn, state.querySql);
+                state.queryResult = result;
+                state.queryColumns = result.length ? Object.keys(result[0]) : [];
+            } catch (err) {
+                state.queryError = String(err);
+                state.queryResult = null;
+            } finally {
+                state.queryLoading = false;
+            }
+        },
+
+        async explainQuery(state: State) {
+            const conn = state.db;
+            if (!conn) return;
+            state.queryLoading = true;
+            state.explainError = null;
+            state.queryError = null;
+            try {
+                state.explainResult = await explainQueryPlan(conn, state.querySql);
+            } catch (err) {
+                state.explainError = String(err);
+                state.explainResult = null;
+            } finally {
+                state.queryLoading = false;
+            }
+        },
+    },
+});
+
+// Shared by loadTable/refreshTableRows actions above. Takes the in-flight draft directly
+// rather than going through store.set, since it's only ever called from within another action.
+async function runRefreshTableRows(state: State) {
+    const conn = state.db;
+    const table = state.selectedTable;
     if (!conn || !table) return;
 
-    rowsLoading.value = true;
-    rowsError.value = null;
+    state.rowsLoading = true;
+    state.rowsError = null;
     try {
-        const columns = selectedTableSchema.value.map((c) => c.name);
-        const opts = { limit: pageSize.value, offset: pageOffset.value };
-        const term = searchTerm.value;
+        const columns = state.selectedTableSchema.map((c) => c.name);
+        const opts = { limit: state.pageSize, offset: state.pageOffset };
+        const term = state.searchTerm;
         const [newRows, count] = await Promise.all([
             searchTableRows(conn, table, columns, term, opts),
             searchTableRowCount(conn, table, columns, term),
         ]);
-        rows.value = newRows;
-        totalRows.value = count;
+        state.rows = newRows;
+        state.totalRows = count;
     } catch (err) {
-        rowsError.value = String(err);
+        state.rowsError = String(err);
     } finally {
-        rowsLoading.value = false;
+        state.rowsLoading = false;
     }
 }
+
+export const useStore = createUseStore(store);
+
+export const {
+    setWsUrl,
+    connectTo,
+    disconnect,
+    loadSchema,
+    toggleStructureColumns,
+    loadTable,
+    refreshTableRows,
+    setActiveTab,
+    setSearchTerm,
+    setPageOffset,
+    selectCell,
+    clearSelectedCell,
+    setQuerySql,
+    executeQuery,
+    explainQuery,
+} = store.actions;
+
+export const selectConnected = (s: State) => s.db !== null;

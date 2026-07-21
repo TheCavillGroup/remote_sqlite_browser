@@ -7,6 +7,7 @@
     "jsr:@oak/oak@^17.2.0": "17.2.0",
     "jsr:@std/assert@1": "1.0.19",
     "jsr:@std/bytes@1": "1.0.6",
+    "jsr:@std/collections@^1.1.2": "1.3.0",
     "jsr:@std/crypto@1": "1.1.0",
     "jsr:@std/encoding@1": "1.0.10",
     "jsr:@std/encoding@^1.0.10": "1.0.10",
@@ -18,11 +19,12 @@
     "jsr:@std/path@1": "1.1.6",
     "jsr:@std/path@1.0": "1.0.9",
     "jsr:@std/path@^1.1.5": "1.1.6",
+    "jsr:@tangerie/global-store@^1.5.0": "1.5.0",
     "jsr:@tangerie/remote-sqlite@^1.2.1": "1.2.1",
     "npm:@deno/vite-plugin@^2.0.2": "2.0.2_vite@6.4.3",
     "npm:@preact/preset-vite@^2.9.0": "2.10.6_@babel+core@7.29.7_vite@6.4.3_preact@10.29.7",
-    "npm:@preact/signals@^1.3.0": "1.3.4_preact@10.29.7",
     "npm:@tailwindcss/vite@4": "4.3.3_vite@6.4.3",
+    "npm:immer@^10.1.1": "10.2.0",
     "npm:path-to-regexp@^6.3.0": "6.3.0",
     "npm:preact@^10.27.0": "10.29.7",
     "npm:tailwindcss@4": "4.3.3",
@@ -75,6 +77,9 @@
     "@std/bytes@1.0.6": {
       "integrity": "f6ac6adbd8ccd99314045f5703e23af0a68d7f7e58364b47d2c7f408aeb5820a"
     },
+    "@std/collections@1.3.0": {
+      "integrity": "eb36b43d784477ea0b476483ac034a14bdd182aff921c812ecf662a1fcef9498"
+    },
     "@std/crypto@1.1.0": {
       "integrity": "b8d6d0a6377a32b213af2661ed7bf1062d94feac0c57def5526a8e74a95c3ec8"
     },
@@ -110,6 +115,14 @@
       "integrity": "c68485c2a4dfbb5ae3cc74fae4e8c4e5d874cf8a8ed12927917235c758b46cbe",
       "dependencies": [
         "jsr:@std/internal"
+      ]
+    },
+    "@tangerie/global-store@1.5.0": {
+      "integrity": "8a9603ec0a37c8212724e6880ce49073aa4d2022d74b66346bc05ba772f02c75",
+      "dependencies": [
+        "jsr:@std/collections",
+        "npm:immer",
+        "npm:preact"
       ]
     },
     "@tangerie/remote-sqlite@1.2.1": {
@@ -485,16 +498,6 @@
         "vite",
         "vite-prerender-plugin",
         "zimmerframe"
-      ]
-    },
-    "@preact/signals-core@1.14.4": {
-      "integrity": "sha512-HNB6HYeYKhQbJ1aKl+YRjrS4+QWHLKX6qKoUsfS/m0vqzsVaEBiZiaKbG/e+NKk2ch5ALQr/ihWaMHxiCuuWHA=="
-    },
-    "@preact/signals@1.3.4_preact@10.29.7": {
-      "integrity": "sha512-TPMkStdT0QpSc8FpB63aOwXoSiZyIrPsP9Uj347KopdS6olZdAYeeird/5FZv/M1Yc1ge5qstub2o8VDbvkT4g==",
-      "dependencies": [
-        "@preact/signals-core",
-        "preact"
       ]
     },
     "@prefresh/babel-plugin@0.5.3": {
@@ -914,6 +917,9 @@
       "integrity": "sha512-F/1DnUGPopORZi0ni+CvrCgHQ5FyEAHRLSApuYWMmrbSwoN2Mn/7k+Gl38gJnR7yyDZk6WLXwiGod1JOWNDKGw==",
       "bin": true
     },
+    "immer@10.2.0": {
+      "integrity": "sha512-d/+XTN3zfODyjr89gM3mPq1WNX2B8pYsu7eORitdwyA2sBubnTl3laYlBk4sXY5FUa5qTZGBDPJICVbvqzjlbw=="
+    },
     "jiti@2.7.0": {
       "integrity": "sha512-AC/7JofJvZGrrneWNaEnJeOLUx+JlGt7tNa0wZiRPT4MY1wmfKjt2+6O2p2uz2+skll8OZZmJMNqeke7kKbNgQ==",
       "bin": true
@@ -1176,10 +1182,10 @@
   },
   "workspace": {
     "dependencies": [
+      "jsr:@tangerie/global-store@^1.5.0",
       "jsr:@tangerie/remote-sqlite@^1.2.1",
       "npm:@deno/vite-plugin@^2.0.2",
       "npm:@preact/preset-vite@^2.9.0",
-      "npm:@preact/signals@^1.3.0",
       "npm:@tailwindcss/vite@4",
       "npm:preact@^10.27.0",
       "npm:tailwindcss@4",

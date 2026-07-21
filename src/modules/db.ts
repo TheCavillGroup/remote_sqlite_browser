@@ -13,6 +13,22 @@ export interface ColumnInfo {
     notnull: number;
     dflt_value: unknown;
     pk: number;
+    /** 0 = normal, 1 = hidden, 2 = virtual generated, 3 = stored generated. */
+    hidden: number;
+}
+
+export interface SchemaObject {
+    type: "table" | "view" | "index" | "trigger";
+    name: string;
+    tbl_name: string;
+    sql: string | null;
+}
+
+export interface ExplainNode {
+    id: number;
+    parent: number;
+    notused: number;
+    detail: string;
 }
 
 export interface PageOpts {
@@ -34,8 +50,14 @@ export function listTables(db: RemoteDatabase): Promise<TableInfo[]> {
     );
 }
 
-export function getTableSchema(db: RemoteDatabase, table: string): Promise<ColumnInfo[]> {
-    return db.run<ColumnInfo>(`PRAGMA table_info(${quoteIdent(table)})`);
+/**
+ * Uses table_xinfo (not table_info) since table_info silently omits generated columns.
+ * Still excludes hidden=1 columns (e.g. FTS5's implicit rank/pseudo-columns) — those aren't
+ * real data columns, unlike hidden=2/3 (virtual/stored generated columns) which we keep.
+ */
+export async function getTableSchema(db: RemoteDatabase, table: string): Promise<ColumnInfo[]> {
+    const columns = await db.run<ColumnInfo>(`PRAGMA table_xinfo(${quoteIdent(table)})`);
+    return columns.filter((c) => c.hidden !== 1);
 }
 
 export async function getTableRowCount(db: RemoteDatabase, table: string): Promise<number> {
@@ -101,4 +123,19 @@ export async function searchTableRowCount(
 /** Runs arbitrary user-supplied SQL verbatim, with no interpolation. */
 export function runQuery(db: RemoteDatabase, sql: string): Promise<Row[]> {
     return db.run<Row>(sql);
+}
+
+/** Every table/view/index/trigger with its CREATE sql; excludes internal sqlite_* objects (incl. autoindexes). */
+export function listSchemaObjects(db: RemoteDatabase): Promise<SchemaObject[]> {
+    return db.run<SchemaObject>(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+    );
+}
+
+/**
+ * EXPLAIN QUERY PLAN for a single statement. The sql is prepended verbatim (same trust model
+ * as runQuery — it's user-typed SQL from the "Run SQL" tab), not identifier-quoted.
+ */
+export function explainQueryPlan(db: RemoteDatabase, sql: string): Promise<ExplainNode[]> {
+    return db.run<ExplainNode>(`EXPLAIN QUERY PLAN ${sql}`);
 }

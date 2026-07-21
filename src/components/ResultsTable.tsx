@@ -1,3 +1,5 @@
+import { selectCell, useStore } from "../state/store.ts";
+
 interface Props {
     columns: string[];
     rows: Record<string, unknown>[];
@@ -11,6 +13,8 @@ function formatCell(v: unknown): string {
 }
 
 export function ResultsTable({ columns, rows }: Props) {
+    const selectedCell = useStore((s) => s.selectedCell);
+
     if (rows.length === 0) {
         return <p class="p-4 text-sm text-gray-400">No rows.</p>;
     }
@@ -32,11 +36,22 @@ export function ResultsTable({ columns, rows }: Props) {
                 <tbody class="divide-y divide-gray-100">
                     {rows.map((row, i) => (
                         <tr key={i} class="even:bg-gray-50">
-                            {cols.map((c) => (
-                                <td key={c} class="whitespace-nowrap px-3 py-1 font-mono text-gray-800">
-                                    {formatCell(row[c])}
-                                </td>
-                            ))}
+                            {cols.map((c) => {
+                                const isSelected = selectedCell?.column === c &&
+                                    selectedCell?.value === row[c];
+                                return (
+                                    <td
+                                        key={c}
+                                        onClick={() => selectCell(c, row[c])}
+                                        title="Click to inspect"
+                                        class={`max-w-[24rem] cursor-pointer truncate px-3 py-1 font-mono text-gray-800 ${
+                                            isSelected ? "bg-blue-100 ring-1 ring-inset ring-blue-400" : ""
+                                        }`}
+                                    >
+                                        {formatCell(row[c])}
+                                    </td>
+                                );
+                            })}
                         </tr>
                     ))}
                 </tbody>

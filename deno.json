@@ -8,10 +8,10 @@
   "imports": {
     "@deno/vite-plugin": "npm:@deno/vite-plugin@^2.0.2",
     "@tangerie/remote-sqlite": "jsr:@tangerie/remote-sqlite@^1.2.1",
+    "@tangerie/global-store": "jsr:@tangerie/global-store@^1.5.0",
     "vite": "npm:vite@^6.0.0",
     "@preact/preset-vite": "npm:@preact/preset-vite@^2.9.0",
     "preact": "npm:preact@^10.27.0",
-    "@preact/signals": "npm:@preact/signals@^1.3.0",
     "tailwindcss": "npm:tailwindcss@^4.0.0",
     "@tailwindcss/vite": "npm:@tailwindcss/vite@^4.0.0"
   },
