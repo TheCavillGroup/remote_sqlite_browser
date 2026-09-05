@@ -1,6 +1,17 @@
-import { useState } from "preact/hooks";
+import { useRef, useState } from "preact/hooks";
 import { type ExplainNode, MAX_QUERY_ROWS } from "../modules/db.ts";
-import { executeQuery, explainQuery, generateTypes, setQuerySql, useStore } from "../state/store.ts";
+import {
+    addQueryTab,
+    closeQueryTab,
+    executeQuery,
+    explainQuery,
+    generateTypes,
+    renameQueryTab,
+    selectActiveQueryTab,
+    setActiveQueryTab,
+    setQuerySql,
+    useStore,
+} from "../state/store.ts";
 import { ResultsTable } from "./ResultsTable.tsx";
 import { SqlEditor } from "./SqlEditor.tsx";
 
@@ -140,26 +151,126 @@ function ExplainTree({ tree, parent = 0, depth = 0 }: {
     );
 }
 
+// Tabs shown as their own strip, mirroring TabBar, so the toolbar below is unambiguously scoped
+// to whichever tab is active.
+function QueryTabStrip() {
+    const tabs = useStore((s) => s.queryTabs);
+    const activeId = useStore((s) => s.activeQueryTabId);
+    const [renamingId, setRenamingId] = useState<string | null>(null);
+    const [draft, setDraft] = useState("");
+    const cancelledRef = useRef(false);
+
+    function startRename(id: string, title: string) {
+        cancelledRef.current = false;
+        setDraft(title);
+        setRenamingId(id);
+    }
+
+    function commitRename() {
+        if (cancelledRef.current) {
+            cancelledRef.current = false;
+            setRenamingId(null);
+            return;
+        }
+        if (renamingId) renameQueryTab(renamingId, draft);
+        setRenamingId(null);
+    }
+
+    function cancelRename() {
+        cancelledRef.current = true;
+        setRenamingId(null);
+    }
+
+    return (
+        <div class="flex items-center gap-1 overflow-x-auto border-b border-gray-200">
+            {tabs.map((t) => (
+                <div
+                    key={t.id}
+                    class={`group -mb-px flex shrink-0 items-center gap-1 border-b-2 py-1.5 pl-3 pr-1.5 text-sm ${
+                        t.id === activeId
+                            ? "border-blue-600 text-blue-700"
+                            : "border-transparent text-gray-600 hover:text-gray-900"
+                    }`}
+                >
+                    {renamingId === t.id
+                        ? (
+                            <input
+                                type="text"
+                                value={draft}
+                                autoFocus
+                                onInput={(e) => setDraft((e.target as HTMLInputElement).value)}
+                                onFocus={(e) => (e.target as HTMLInputElement).select()}
+                                onBlur={commitRename}
+                                onKeyDown={(e) => {
+                                    if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+                                    if (e.key === "Escape") cancelRename();
+                                }}
+                                class="w-28 max-w-40 rounded border border-blue-400 px-1 py-0.5 text-sm font-medium text-gray-900"
+                            />
+                        )
+                        : (
+                            <button
+                                type="button"
+                                onClick={() => setActiveQueryTab(t.id)}
+                                class="max-w-40 truncate font-medium"
+                            >
+                                {t.title}
+                            </button>
+                        )}
+                    {renamingId !== t.id && (
+                        <button
+                            type="button"
+                            onClick={() => startRename(t.id, t.title)}
+                            title="Rename tab"
+                            class="hidden rounded px-1 text-gray-400 hover:bg-gray-200 hover:text-gray-700 group-hover:inline"
+                        >
+                            ✎
+                        </button>
+                    )}
+                    {tabs.length > 1 && renamingId !== t.id && (
+                        <button
+                            type="button"
+                            onClick={() => closeQueryTab(t.id)}
+                            title="Close tab"
+                            class="rounded px-1 text-gray-400 hover:bg-gray-200 hover:text-gray-700"
+                        >
+                            ×
+                        </button>
+                    )}
+                </div>
+            ))}
+            <button
+                type="button"
+                onClick={() => addQueryTab()}
+                title="New query tab"
+                class="shrink-0 px-2 py-1.5 text-sm text-gray-500 hover:text-gray-900"
+            >
+                +
+            </button>
+        </div>
+    );
+}
+
 // The editor lives in its own component so that typing — which writes querySql on every keystroke —
 // re-renders only this subtree. Selecting querySql in QueryRunner instead would re-render the whole
 // results table on every character, which locks the tab up on any sizeable result.
-function QueryEditorPanel() {
-    const querySql = useStore((s) => s.querySql);
-    const queryLoading = useStore((s) => s.queryLoading);
+function QueryEditorPanel({ tabId }: { tabId: string }) {
+    const querySql = useStore((s) => s.queryTabs.find((t) => t.id === tabId)?.querySql ?? "");
+    const queryLoading = useStore((s) => s.queryTabs.find((t) => t.id === tabId)?.queryLoading ?? false);
     const schemaMap = useStore((s) => s.schemaMap);
 
     return (
         <>
             <SqlEditor
                 value={querySql}
-                onChange={setQuerySql}
-                onRun={() => executeQuery()}
+                onChange={(sql) => setQuerySql(tabId, sql)}
+                onRun={() => executeQuery(tabId)}
                 schema={schemaMap}
             />
             <div class="mt-2 flex items-center gap-2">
                 <button
                     type="button"
-                    onClick={() => executeQuery()}
+                    onClick={() => executeQuery(tabId)}
                     disabled={queryLoading}
                     class="rounded bg-blue-600 px-3 py-1 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
                 >
@@ -167,7 +278,7 @@ function QueryEditorPanel() {
                 </button>
                 <button
                     type="button"
-                    onClick={() => explainQuery()}
+                    onClick={() => explainQuery(tabId)}
                     disabled={queryLoading}
                     class="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50"
                 >
@@ -175,7 +286,7 @@ function QueryEditorPanel() {
                 </button>
                 <button
                     type="button"
-                    onClick={() => generateTypes()}
+                    onClick={() => generateTypes(tabId)}
                     disabled={queryLoading}
                     class="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50"
                 >
@@ -188,18 +299,22 @@ function QueryEditorPanel() {
 }
 
 export function QueryRunner() {
-    const queryError = useStore((s) => s.queryError);
-    const queryResult = useStore((s) => s.queryResult);
-    const queryColumns = useStore((s) => s.queryColumns);
-    const queryTruncated = useStore((s) => s.queryTruncated);
-    const explainResult = useStore((s) => s.explainResult);
-    const explainError = useStore((s) => s.explainError);
-    const generatedCode = useStore((s) => s.generatedCode);
-    const generateError = useStore((s) => s.generateError);
+    const activeQueryTabId = useStore((s) => s.activeQueryTabId);
+    const queryError = useStore((s) => selectActiveQueryTab(s)?.queryError ?? null);
+    const queryResult = useStore((s) => selectActiveQueryTab(s)?.queryResult ?? null);
+    const queryColumns = useStore((s) => selectActiveQueryTab(s)?.queryColumns ?? []);
+    const queryTruncated = useStore((s) => selectActiveQueryTab(s)?.queryTruncated ?? false);
+    const explainResult = useStore((s) => selectActiveQueryTab(s)?.explainResult ?? null);
+    const explainError = useStore((s) => selectActiveQueryTab(s)?.explainError ?? null);
+    const generatedCode = useStore((s) => selectActiveQueryTab(s)?.generatedCode ?? null);
+    const generateError = useStore((s) => selectActiveQueryTab(s)?.generateError ?? null);
 
     return (
         <div class="flex flex-col p-3 md:h-full">
-            <QueryEditorPanel />
+            <QueryTabStrip />
+            <div class="mt-3">
+                <QueryEditorPanel key={activeQueryTabId} tabId={activeQueryTabId} />
+            </div>
             {queryError && (
                 <div class="mt-3 rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
                     {queryError}

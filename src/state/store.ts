@@ -22,6 +22,7 @@ import { generateRunSnippet } from "../modules/tsgen.ts";
 
 const LAST_URL_KEY = "remote-sqlite:last-url";
 const RECENT_URLS_KEY = "remote-sqlite:recent-urls";
+const QUERY_TABS_KEY_PREFIX = "remote-sqlite:queries:";
 
 export type Tab = "structure" | "browse" | "query";
 
@@ -30,6 +31,86 @@ export type ConnStatus = "idle" | "connecting" | "connected" | "reconnecting";
 export interface SelectedCell {
     column: string;
     value: unknown;
+}
+
+export interface QueryTabState {
+    id: string;
+    title: string;
+    querySql: string;
+    queryResult: Record<string, unknown>[] | null;
+    queryColumns: string[];
+    /** True when the result was capped at MAX_QUERY_ROWS and there were more rows. */
+    queryTruncated: boolean;
+    queryError: string | null;
+    queryLoading: boolean;
+    explainResult: ExplainNode[] | null;
+    explainError: string | null;
+    generatedCode: string | null;
+    generateError: string | null;
+}
+
+let queryTabIdSeq = 1;
+
+// Lowest positive integer not already used as a "Query <n>" title among the given tabs, so
+// closing or renaming a tab frees its number up instead of the count climbing forever.
+function nextQueryTabNumber(tabs: QueryTabState[]): number {
+    const used = new Set<number>();
+    for (const t of tabs) {
+        const m = /^Query (\d+)$/.exec(t.title);
+        if (m) used.add(Number(m[1]));
+    }
+    let n = 1;
+    while (used.has(n)) n++;
+    return n;
+}
+
+function makeQueryTab(sql = "", existingTabs: QueryTabState[] = []): QueryTabState {
+    return {
+        id: `q${queryTabIdSeq++}`,
+        title: `Query ${nextQueryTabNumber(existingTabs)}`,
+        querySql: sql,
+        queryResult: null,
+        queryColumns: [],
+        queryTruncated: false,
+        queryError: null,
+        queryLoading: false,
+        explainResult: null,
+        explainError: null,
+        generatedCode: null,
+        generateError: null,
+    };
+}
+
+function findQueryTab(state: State, id: string) {
+    return state.queryTabs.find((t) => t.id === id);
+}
+
+/** Only title + sql get persisted — results/errors are re-derived by running the query again. */
+interface PersistedQueryTab {
+    title: string;
+    sql: string;
+}
+
+function loadQueryTabs(url: string): QueryTabState[] {
+    try {
+        const raw = localStorage.getItem(QUERY_TABS_KEY_PREFIX + url);
+        const saved: PersistedQueryTab[] = raw ? JSON.parse(raw) : [];
+        if (!Array.isArray(saved) || saved.length === 0) {
+            return [makeQueryTab("SELECT * FROM sqlite_master;")];
+        }
+        return saved.map((t) => {
+            const tab = makeQueryTab(t.sql);
+            tab.title = t.title;
+            return tab;
+        });
+    } catch {
+        return [makeQueryTab("SELECT * FROM sqlite_master;")];
+    }
+}
+
+function saveQueryTabs(url: string, tabs: QueryTabState[]) {
+    const payload: PersistedQueryTab[] = tabs.map((t) => ({ title: t.title, sql: t.querySql }));
+    localStorage.setItem(QUERY_TABS_KEY_PREFIX + url, JSON.stringify(payload));
 }
 
 /** The result of opening a connection and loading its schema. */
@@ -69,20 +150,12 @@ export interface State {
     rowsLoading: boolean;
     rowsError: string | null;
 
-    querySql: string;
-    queryResult: Record<string, unknown>[] | null;
-    queryColumns: string[];
-    /** True when the result was capped at MAX_QUERY_ROWS and there were more rows. */
-    queryTruncated: boolean;
-    queryError: string | null;
-    queryLoading: boolean;
-    explainResult: ExplainNode[] | null;
-    explainError: string | null;
-    generatedCode: string | null;
-    generateError: string | null;
+    queryTabs: QueryTabState[];
+    activeQueryTabId: string;
 }
 
 function initialState(): State {
+    const firstQueryTab = makeQueryTab("SELECT * FROM sqlite_master;");
     return {
         wsUrl: localStorage.getItem(LAST_URL_KEY) ?? "ws://localhost:8090/sql",
         db: null,
@@ -112,16 +185,8 @@ function initialState(): State {
         rowsLoading: false,
         rowsError: null,
 
-        querySql: "SELECT * FROM sqlite_master;",
-        queryResult: null,
-        queryColumns: [],
-        queryTruncated: false,
-        queryError: null,
-        queryLoading: false,
-        explainResult: null,
-        explainError: null,
-        generatedCode: null,
-        generateError: null,
+        queryTabs: [firstQueryTab],
+        activeQueryTabId: firstQueryTab.id,
     };
 }
 
@@ -161,7 +226,7 @@ const store = createStore({
             state.wsUrl = url;
         },
 
-        connectSucceeded(state: State, payload: EstablishResult & { recentUrls: string[] }) {
+        connectSucceeded(state: State, payload: EstablishResult & { recentUrls: string[]; queryTabs: QueryTabState[] }) {
             state.db = payload.conn;
             state.tables = payload.tables;
             state.schemaObjects = payload.schemaObjects;
@@ -171,6 +236,8 @@ const store = createStore({
             state.schemaError = null;
             state.connectError = null;
             resetTableState(state);
+            state.queryTabs = payload.queryTabs;
+            state.activeQueryTabId = payload.queryTabs[0].id;
             state.activeTab = "structure";
             state.status = "connected";
         },
@@ -284,64 +351,109 @@ const store = createStore({
             state.selectedCell = null;
         },
 
-        setQuerySql(state: State, sql: string) {
-            state.querySql = sql;
+        setQuerySql(state: State, id: string, sql: string) {
+            const tab = findQueryTab(state, id);
+            if (tab) tab.querySql = sql;
+        },
+
+        addQueryTab(state: State) {
+            const tab = makeQueryTab("", state.queryTabs);
+            state.queryTabs.push(tab);
+            state.activeQueryTabId = tab.id;
+        },
+
+        renameQueryTab(state: State, id: string, title: string) {
+            const tab = findQueryTab(state, id);
+            if (!tab) return;
+            const trimmed = title.trim();
+            const others = state.queryTabs.filter((t) => t.id !== id);
+            tab.title = trimmed || `Query ${nextQueryTabNumber(others)}`;
+        },
+
+        closeQueryTab(state: State, id: string) {
+            if (state.queryTabs.length <= 1) return;
+            const idx = state.queryTabs.findIndex((t) => t.id === id);
+            if (idx === -1) return;
+            state.queryTabs.splice(idx, 1);
+            if (state.activeQueryTabId === id) {
+                const next = state.queryTabs[idx] ?? state.queryTabs[idx - 1];
+                state.activeQueryTabId = next.id;
+            }
+        },
+
+        setActiveQueryTab(state: State, id: string) {
+            state.activeQueryTabId = id;
         },
 
         // Like the connection transitions above, the query actions are synchronous — an async
         // action's draft is snapshotted before its await and committed after, so "Running…" would
         // never render and any keystroke made mid-query would be reverted by the stale draft.
         // The async orchestration lives in executeQuery/explainQuery/generateTypes below.
-        beginRun(state: State) {
-            state.queryLoading = true;
-            state.queryError = null;
-            state.explainResult = null;
-            state.explainError = null;
-            state.generatedCode = null;
-            state.generateError = null;
+        beginRun(state: State, id: string) {
+            const tab = findQueryTab(state, id);
+            if (!tab) return;
+            tab.queryLoading = true;
+            tab.queryError = null;
+            tab.explainResult = null;
+            tab.explainError = null;
+            tab.generatedCode = null;
+            tab.generateError = null;
             state.selectedCell = null;
         },
 
-        runSucceeded(state: State, payload: { rows: Record<string, unknown>[]; columns: string[]; truncated: boolean }) {
-            state.queryResult = payload.rows;
-            state.queryColumns = payload.columns;
-            state.queryTruncated = payload.truncated;
-            state.queryLoading = false;
+        runSucceeded(state: State, id: string, payload: { rows: Record<string, unknown>[]; columns: string[]; truncated: boolean }) {
+            const tab = findQueryTab(state, id);
+            if (!tab) return;
+            tab.queryResult = payload.rows;
+            tab.queryColumns = payload.columns;
+            tab.queryTruncated = payload.truncated;
+            tab.queryLoading = false;
         },
 
-        runFailed(state: State, err: string) {
-            state.queryError = err;
-            state.queryResult = null;
-            state.queryTruncated = false;
-            state.queryLoading = false;
+        runFailed(state: State, id: string, err: string) {
+            const tab = findQueryTab(state, id);
+            if (!tab) return;
+            tab.queryError = err;
+            tab.queryResult = null;
+            tab.queryTruncated = false;
+            tab.queryLoading = false;
         },
 
-        explainSucceeded(state: State, nodes: ExplainNode[]) {
-            state.explainResult = nodes;
-            state.queryLoading = false;
+        explainSucceeded(state: State, id: string, nodes: ExplainNode[]) {
+            const tab = findQueryTab(state, id);
+            if (!tab) return;
+            tab.explainResult = nodes;
+            tab.queryLoading = false;
         },
 
-        explainFailed(state: State, err: string) {
-            state.explainError = err;
-            state.explainResult = null;
-            state.queryLoading = false;
+        explainFailed(state: State, id: string, err: string) {
+            const tab = findQueryTab(state, id);
+            if (!tab) return;
+            tab.explainError = err;
+            tab.explainResult = null;
+            tab.queryLoading = false;
         },
 
-        generateSucceeded(state: State, code: string) {
-            state.generatedCode = code;
-            state.queryLoading = false;
+        generateSucceeded(state: State, id: string, code: string) {
+            const tab = findQueryTab(state, id);
+            if (!tab) return;
+            tab.generatedCode = code;
+            tab.queryLoading = false;
         },
 
-        generateFailed(state: State, err: string) {
-            state.generateError = err;
-            state.generatedCode = null;
-            state.queryLoading = false;
+        generateFailed(state: State, id: string, err: string) {
+            const tab = findQueryTab(state, id);
+            if (!tab) return;
+            tab.generateError = err;
+            tab.generatedCode = null;
+            tab.queryLoading = false;
         },
 
         // The session moved on (disconnect/reconnect) while a run was in flight — drop the result
         // but still clear the flag, or the buttons stay disabled forever.
-        queryAborted(state: State) {
-            state.queryLoading = false;
+        queryAborted(state: State, id: string) {
+            const tab = findQueryTab(state, id);
+            if (tab) tab.queryLoading = false;
         },
     },
 });
@@ -494,7 +606,7 @@ export async function connectTo(url: string) {
             result.conn.close();
             return;
         }
-        store.actions.connectSucceeded({ ...result, recentUrls: rememberUrl(url) });
+        store.actions.connectSucceeded({ ...result, recentUrls: rememberUrl(url), queryTabs: loadQueryTabs(url) });
         startHeartbeat(gen);
     } catch (err) {
         if (gen !== connGen) return;
@@ -517,70 +629,77 @@ export function disconnect() {
 // so a run that outlives its session (disconnect, reconnect elsewhere) can't resurrect results,
 // and nothing typed while a query is in flight gets clobbered by a stale draft.
 
-export async function executeQuery() {
-    const { db: conn, querySql, queryLoading } = store.get();
-    if (!conn || queryLoading) return;
-    store.actions.beginRun();
+export async function executeQuery(tabId: string) {
+    const { db: conn, queryTabs, wsUrl } = store.get();
+    const tab = queryTabs.find((t) => t.id === tabId);
+    if (!conn || !tab || tab.queryLoading) return;
+    const querySql = tab.querySql;
+    saveQueryTabs(wsUrl, queryTabs);
+    store.actions.beginRun(tabId);
     try {
         const rows = await runQuery(conn, querySql);
         if (store.get().db !== conn) {
-            store.actions.queryAborted();
+            store.actions.queryAborted(tabId);
             return;
         }
         // A query with its own LIMIT was run uncapped, so there's nothing to trim or warn about.
         const truncated = !hasLimitClause(querySql) && rows.length > MAX_QUERY_ROWS;
         const page = truncated ? rows.slice(0, MAX_QUERY_ROWS) : rows;
-        store.actions.runSucceeded({
+        store.actions.runSucceeded(tabId, {
             rows: page,
             columns: page.length ? Object.keys(page[0]) : [],
             truncated,
         });
     } catch (err) {
         if (store.get().db !== conn) {
-            store.actions.queryAborted();
+            store.actions.queryAborted(tabId);
             return;
         }
-        store.actions.runFailed(String(err));
+        store.actions.runFailed(tabId, String(err));
     }
 }
 
-export async function explainQuery() {
-    const { db: conn, querySql, queryLoading } = store.get();
-    if (!conn || queryLoading) return;
-    store.actions.beginRun();
+export async function explainQuery(tabId: string) {
+    const { db: conn, queryTabs } = store.get();
+    const tab = queryTabs.find((t) => t.id === tabId);
+    if (!conn || !tab || tab.queryLoading) return;
+    const querySql = tab.querySql;
+    store.actions.beginRun(tabId);
     try {
         const nodes = await explainQueryPlan(conn, querySql);
         if (store.get().db !== conn) {
-            store.actions.queryAborted();
+            store.actions.queryAborted(tabId);
             return;
         }
-        store.actions.explainSucceeded(nodes);
+        store.actions.explainSucceeded(tabId, nodes);
     } catch (err) {
         if (store.get().db !== conn) {
-            store.actions.queryAborted();
+            store.actions.queryAborted(tabId);
             return;
         }
-        store.actions.explainFailed(String(err));
+        store.actions.explainFailed(tabId, String(err));
     }
 }
 
-export async function generateTypes() {
-    const { db: conn, querySql, queryLoading } = store.get();
-    if (!conn || queryLoading) return;
-    store.actions.beginRun();
+export async function generateTypes(tabId: string) {
+    const { db: conn, queryTabs } = store.get();
+    const tab = queryTabs.find((t) => t.id === tabId);
+    if (!conn || !tab || tab.queryLoading) return;
+    const querySql = tab.querySql;
+    store.actions.beginRun(tabId);
     try {
         const rows = await sampleRowsForTypes(conn, querySql);
         if (store.get().db !== conn) {
-            store.actions.queryAborted();
+            store.actions.queryAborted(tabId);
             return;
         }
-        store.actions.generateSucceeded(generateRunSnippet(querySql, rows));
+        store.actions.generateSucceeded(tabId, generateRunSnippet(querySql, rows));
     } catch (err) {
         if (store.get().db !== conn) {
-            store.actions.queryAborted();
+            store.actions.queryAborted(tabId);
             return;
         }
-        store.actions.generateFailed(String(err));
+        store.actions.generateFailed(tabId, String(err));
     }
 }
 
@@ -598,7 +717,12 @@ export const {
     selectCell,
     clearSelectedCell,
     setQuerySql,
+    addQueryTab,
+    renameQueryTab,
+    closeQueryTab,
+    setActiveQueryTab,
 } = store.actions;
 
 export const selectConnected = (s: State) => s.status === "connected";
 export const selectHasSession = (s: State) => s.status === "connected" || s.status === "reconnecting";
+export const selectActiveQueryTab = (s: State) => s.queryTabs.find((t) => t.id === s.activeQueryTabId);
