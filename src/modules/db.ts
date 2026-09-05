@@ -120,23 +120,83 @@ export async function searchTableRowCount(
     return rows[0]?.n ?? 0;
 }
 
-/** Runs arbitrary user-supplied SQL verbatim, with no interpolation. */
-export function runQuery(db: RemoteDatabase, sql: string): Promise<Row[]> {
-    return db.run<Row>(sql);
+export const MAX_QUERY_ROWS = 1000;
+
+/**
+ * True when the statement carries its own top-level LIMIT, meaning the user has already bounded the
+ * result and we leave it alone. This scans rather than parses: string literals, quoted identifiers
+ * and comments are skipped so a stray "limit" inside one doesn't count, and anything inside
+ * parentheses is a subquery or CTE whose LIMIT says nothing about how many rows come back.
+ */
+export function hasLimitClause(sql: string): boolean {
+    let depth = 0;
+    for (let i = 0; i < sql.length; i++) {
+        const c = sql[i];
+        if (c === "'" || c === '"' || c === "`") {
+            i++;
+            while (i < sql.length) {
+                // A doubled quote is an escaped one, not the end of the literal.
+                if (sql[i] === c) {
+                    if (sql[i + 1] !== c) break;
+                    i++;
+                }
+                i++;
+            }
+        } else if (c === "[") {
+            while (i < sql.length && sql[i] !== "]") i++;
+        } else if (c === "-" && sql[i + 1] === "-") {
+            while (i < sql.length && sql[i] !== "\n") i++;
+        } else if (c === "/" && sql[i + 1] === "*") {
+            i += 2;
+            while (i < sql.length && !(sql[i] === "*" && sql[i + 1] === "/")) i++;
+            i++;
+        } else if (c === "(") {
+            depth++;
+        } else if (c === ")") {
+            depth--;
+        } else if (depth === 0 && (c === "l" || c === "L")) {
+            const before = i === 0 ? " " : sql[i - 1];
+            const after = sql[i + 5] ?? " ";
+            if (
+                sql.slice(i, i + 5).toLowerCase() === "limit" &&
+                !/[\w$]/.test(before) && !/[\w$]/.test(after)
+            ) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 /**
- * Sample rows from an arbitrary query for TS type inference. Wraps the query as a subquery so we
- * can cap the sample with LIMIT; falls back to running it raw for statements that can't be wrapped
- * (PRAGMA, etc.). `limit` is an internal constant, never user input, so interpolation is safe.
+ * Runs sql capped at `limit` rows. Wraps the statement as a subquery so the cap applies at the
+ * server; falls back to running it raw (then slicing) for statements that can't be wrapped — PRAGMA,
+ * DML, etc. A wrap failure is a prepare failure, so the statement never ran and the fallback
+ * executes it exactly once. Returns up to limit + 1 rows so callers can detect truncation. `limit`
+ * is an internal constant, never user input, so interpolation is safe.
  */
-export async function sampleRowsForTypes(db: RemoteDatabase, sql: string, limit = 100): Promise<Row[]> {
+async function runCapped(db: RemoteDatabase, sql: string, limit: number): Promise<Row[]> {
     const trimmed = sql.replace(/;\s*$/, "").trim();
     try {
-        return await db.run<Row>(`SELECT * FROM (\n${trimmed}\n) LIMIT ${limit}`);
+        return await db.run<Row>(`SELECT * FROM (\n${trimmed}\n) LIMIT ${limit + 1}`);
     } catch {
-        return await runQuery(db, sql);
+        const rows = await db.run<Row>(sql);
+        return rows.slice(0, limit + 1);
     }
+}
+
+/**
+ * Runs arbitrary user-supplied SQL. A statement with its own LIMIT runs verbatim and uncapped —
+ * the user has said how many rows they want. Everything else is capped at MAX_QUERY_ROWS.
+ */
+export function runQuery(db: RemoteDatabase, sql: string): Promise<Row[]> {
+    return hasLimitClause(sql) ? db.run<Row>(sql) : runCapped(db, sql, MAX_QUERY_ROWS);
+}
+
+/** Sample rows from an arbitrary query for TS type inference. Always capped — a user LIMIT of a
+ * million rows is still only 100 rows' worth of type information. */
+export function sampleRowsForTypes(db: RemoteDatabase, sql: string, limit = 100): Promise<Row[]> {
+    return runCapped(db, sql, limit);
 }
 
 /** Every table/view/index/trigger with its CREATE sql; excludes internal sqlite_* objects (incl. autoindexes). */

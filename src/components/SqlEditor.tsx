@@ -20,9 +20,10 @@ const editorTheme = EditorView.theme({
     "&": { fontSize: "0.875rem" },
     ".cm-content": {
         fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-        minHeight: "8rem",
     },
-    ".cm-scroller": { maxHeight: "240px" },
+    // A fixed height rather than min/max: a growing editor box re-solves the flex column and
+    // forces the results grid to lay out again, on every keystroke that changes its size.
+    ".cm-scroller": { height: "240px" },
 });
 
 export function SqlEditor({ value, onChange, onRun, schema }: Props) {
@@ -37,7 +38,10 @@ export function SqlEditor({ value, onChange, onRun, schema }: Props) {
     const onRunRef = useRef(onRun);
     onRunRef.current = onRun;
 
-    // Create the editor once.
+    const mounted = useRef(false);
+
+    // Create the editor once. The empty dep array is deliberate despite closing over value/schema —
+    // filling it in tears down and rebuilds CodeMirror on every keystroke.
     useEffect(() => {
         const runKeymap = Prec.highest(
             keymap.of([
@@ -78,8 +82,14 @@ export function SqlEditor({ value, onChange, onRun, schema }: Props) {
         };
     }, []);
 
-    // Reconfigure autocomplete when the schema changes (e.g. after connecting).
+    // Reconfigure autocomplete when the schema changes (e.g. after connecting). Skipped on mount,
+    // where the view was just created with this same extension — rebuilding it there costs a second
+    // completion-tree build plus a full document reparse.
     useEffect(() => {
+        if (!mounted.current) {
+            mounted.current = true;
+            return;
+        }
         viewRef.current?.dispatch({
             effects: langCompartment.current.reconfigure(sqlExtension(schema)),
         });

@@ -33,8 +33,13 @@ function formatPrimitive(v: unknown): string {
     return String(v);
 }
 
+// Depth is self-limiting (auto-expand stops at 2) but breadth isn't — a cell holding a 200k-element
+// array would otherwise mount 200k components the moment it's clicked.
+const MAX_ENTRIES = 200;
+
 export function JsonTree({ value, label, depth = 0 }: Props) {
     const [open, setOpen] = useState(depth < 2);
+    const [shown, setShown] = useState(MAX_ENTRIES);
 
     if (!isContainer(value)) {
         return (
@@ -64,9 +69,18 @@ export function JsonTree({ value, label, depth = 0 }: Props) {
             </button>
             {open && (
                 <div class="ml-4 border-l border-gray-200 pl-2">
-                    {entries.map(([k, v]) => (
+                    {entries.slice(0, shown).map(([k, v]) => (
                         <JsonTree key={k} label={k} value={v} depth={depth + 1} />
                     ))}
+                    {entries.length > shown && (
+                        <button
+                            type="button"
+                            onClick={() => setShown(shown + MAX_ENTRIES)}
+                            class="text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                        >
+                            … {entries.length - shown} more
+                        </button>
+                    )}
                 </div>
             )}
         </div>

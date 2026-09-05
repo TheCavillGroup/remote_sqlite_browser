@@ -1,5 +1,5 @@
 import { useState } from "preact/hooks";
-import type { ExplainNode } from "../modules/db.ts";
+import { type ExplainNode, MAX_QUERY_ROWS } from "../modules/db.ts";
 import { executeQuery, explainQuery, generateTypes, setQuerySql, useStore } from "../state/store.ts";
 import { ResultsTable } from "./ResultsTable.tsx";
 import { SqlEditor } from "./SqlEditor.tsx";
@@ -108,39 +108,48 @@ function PlanRow({ detail }: { detail: string }) {
     );
 }
 
-function ExplainTree({ nodes, parent = 0, depth = 0 }: {
-    nodes: ExplainNode[];
+/** Guards against a malformed plan (a self-parented or cyclic id) recursing forever. */
+const MAX_PLAN_DEPTH = 64;
+
+function byParent(nodes: ExplainNode[]): Map<number, ExplainNode[]> {
+    const map = new Map<number, ExplainNode[]>();
+    for (const n of nodes) {
+        const siblings = map.get(n.parent);
+        if (siblings) siblings.push(n);
+        else map.set(n.parent, [n]);
+    }
+    return map;
+}
+
+function ExplainTree({ tree, parent = 0, depth = 0 }: {
+    tree: Map<number, ExplainNode[]>;
     parent?: number;
     depth?: number;
 }) {
-    const children = nodes.filter((n) => n.parent === parent);
-    if (children.length === 0) return null;
+    const nodes = tree.get(parent);
+    if (!nodes || depth > MAX_PLAN_DEPTH) return null;
     return (
         <ul class={depth > 0 ? "ml-3 space-y-0.5 border-l border-gray-200 pl-3" : "space-y-0.5"}>
-            {children.map((n) => (
+            {nodes.map((n) => (
                 <li key={n.id}>
                     <PlanRow detail={n.detail} />
-                    <ExplainTree nodes={nodes} parent={n.id} depth={depth + 1} />
+                    <ExplainTree tree={tree} parent={n.id} depth={depth + 1} />
                 </li>
             ))}
         </ul>
     );
 }
 
-export function QueryRunner() {
+// The editor lives in its own component so that typing — which writes querySql on every keystroke —
+// re-renders only this subtree. Selecting querySql in QueryRunner instead would re-render the whole
+// results table on every character, which locks the tab up on any sizeable result.
+function QueryEditorPanel() {
     const querySql = useStore((s) => s.querySql);
     const queryLoading = useStore((s) => s.queryLoading);
-    const queryError = useStore((s) => s.queryError);
-    const queryResult = useStore((s) => s.queryResult);
-    const queryColumns = useStore((s) => s.queryColumns);
-    const explainResult = useStore((s) => s.explainResult);
-    const explainError = useStore((s) => s.explainError);
-    const generatedCode = useStore((s) => s.generatedCode);
-    const generateError = useStore((s) => s.generateError);
     const schemaMap = useStore((s) => s.schemaMap);
 
     return (
-        <div class="flex flex-col p-3 md:h-full">
+        <>
             <SqlEditor
                 value={querySql}
                 onChange={setQuerySql}
@@ -174,6 +183,23 @@ export function QueryRunner() {
                 </button>
                 <span class="text-xs text-gray-400">Ctrl/Cmd+Enter to run</span>
             </div>
+        </>
+    );
+}
+
+export function QueryRunner() {
+    const queryError = useStore((s) => s.queryError);
+    const queryResult = useStore((s) => s.queryResult);
+    const queryColumns = useStore((s) => s.queryColumns);
+    const queryTruncated = useStore((s) => s.queryTruncated);
+    const explainResult = useStore((s) => s.explainResult);
+    const explainError = useStore((s) => s.explainError);
+    const generatedCode = useStore((s) => s.generatedCode);
+    const generateError = useStore((s) => s.generateError);
+
+    return (
+        <div class="flex flex-col p-3 md:h-full">
+            <QueryEditorPanel />
             {queryError && (
                 <div class="mt-3 rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
                     {queryError}
@@ -197,13 +223,20 @@ export function QueryRunner() {
                     </div>
                     {explainResult.length === 0
                         ? <p class="text-xs text-gray-400">No plan returned.</p>
-                        : <ExplainTree nodes={explainResult} />}
+                        : <ExplainTree tree={byParent(explainResult)} />}
                 </div>
             )}
             {generatedCode === null && explainResult === null && queryResult !== null && (
-                <div class="mt-3 rounded border border-gray-200 md:min-h-0 md:flex-1 md:overflow-auto">
-                    <ResultsTable columns={queryColumns} rows={queryResult} />
-                </div>
+                <>
+                    {queryTruncated && (
+                        <p class="mt-3 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                            Showing the first {MAX_QUERY_ROWS.toLocaleString()} rows. Add your own LIMIT to see more.
+                        </p>
+                    )}
+                    <div class="mt-3 rounded border border-gray-200 md:min-h-0 md:flex-1 md:overflow-auto">
+                        <ResultsTable columns={queryColumns} rows={queryResult} />
+                    </div>
+                </>
             )}
         </div>
     );

@@ -17,7 +17,7 @@ export default defineConfig(({ command }) => ({
       // correctly for the dev server (esbuild), but Rollup's production build resolves it
       // to preact's root export instead of the ./hooks subpath. Alias it to our own
       // already-working "preact/hooks" bare specifier so both build modes agree.
-      { find: "npm:preact@^10.27.0/hooks", replacement: "preact/hooks" },
+      { find: "npm:/preact@^10.29.8/hooks", replacement: "preact/hooks" },
     ],
   },
 }));

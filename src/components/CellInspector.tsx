@@ -1,3 +1,4 @@
+import { useMemo } from "preact/hooks";
 import { clearSelectedCell, useStore } from "../state/store.ts";
 import { JsonTree } from "./JsonTree.tsx";
 
@@ -23,9 +24,8 @@ function rawText(value: unknown): string {
 
 export function CellInspector() {
     const cell = useStore((s) => s.selectedCell);
+    const json = useMemo(() => cell && tryParseJson(cell.value), [cell]);
     if (!cell) return null;
-
-    const json = tryParseJson(cell.value);
 
     return (
         <aside class="flex max-h-[45vh] w-full shrink-0 flex-col border-t border-gray-200 bg-white md:max-h-none md:w-96 md:border-t-0 md:border-l">

@@ -7,8 +7,10 @@ import {
     explainQueryPlan,
     getSchemaMap,
     getTableSchema,
+    hasLimitClause,
     listSchemaObjects,
     listTables,
+    MAX_QUERY_ROWS,
     runQuery,
     sampleRowsForTypes,
     type SchemaObject,
@@ -70,6 +72,8 @@ export interface State {
     querySql: string;
     queryResult: Record<string, unknown>[] | null;
     queryColumns: string[];
+    /** True when the result was capped at MAX_QUERY_ROWS and there were more rows. */
+    queryTruncated: boolean;
     queryError: string | null;
     queryLoading: boolean;
     explainResult: ExplainNode[] | null;
@@ -111,6 +115,7 @@ function initialState(): State {
         querySql: "SELECT * FROM sqlite_master;",
         queryResult: null,
         queryColumns: [],
+        queryTruncated: false,
         queryError: null,
         queryLoading: false,
         explainResult: null,
@@ -283,9 +288,11 @@ const store = createStore({
             state.querySql = sql;
         },
 
-        async executeQuery(state: State) {
-            const conn = state.db;
-            if (!conn) return;
+        // Like the connection transitions above, the query actions are synchronous — an async
+        // action's draft is snapshotted before its await and committed after, so "Running…" would
+        // never render and any keystroke made mid-query would be reverted by the stale draft.
+        // The async orchestration lives in executeQuery/explainQuery/generateTypes below.
+        beginRun(state: State) {
             state.queryLoading = true;
             state.queryError = null;
             state.explainResult = null;
@@ -293,52 +300,48 @@ const store = createStore({
             state.generatedCode = null;
             state.generateError = null;
             state.selectedCell = null;
-            try {
-                const result = await runQuery(conn, state.querySql);
-                state.queryResult = result;
-                state.queryColumns = result.length ? Object.keys(result[0]) : [];
-            } catch (err) {
-                state.queryError = String(err);
-                state.queryResult = null;
-            } finally {
-                state.queryLoading = false;
-            }
         },
 
-        async explainQuery(state: State) {
-            const conn = state.db;
-            if (!conn) return;
-            state.queryLoading = true;
-            state.explainError = null;
-            state.queryError = null;
-            state.generatedCode = null;
-            state.generateError = null;
-            try {
-                state.explainResult = await explainQueryPlan(conn, state.querySql);
-            } catch (err) {
-                state.explainError = String(err);
-                state.explainResult = null;
-            } finally {
-                state.queryLoading = false;
-            }
+        runSucceeded(state: State, payload: { rows: Record<string, unknown>[]; columns: string[]; truncated: boolean }) {
+            state.queryResult = payload.rows;
+            state.queryColumns = payload.columns;
+            state.queryTruncated = payload.truncated;
+            state.queryLoading = false;
         },
 
-        async generateTypes(state: State) {
-            const conn = state.db;
-            if (!conn) return;
-            state.queryLoading = true;
-            state.generateError = null;
+        runFailed(state: State, err: string) {
+            state.queryError = err;
+            state.queryResult = null;
+            state.queryTruncated = false;
+            state.queryLoading = false;
+        },
+
+        explainSucceeded(state: State, nodes: ExplainNode[]) {
+            state.explainResult = nodes;
+            state.queryLoading = false;
+        },
+
+        explainFailed(state: State, err: string) {
+            state.explainError = err;
             state.explainResult = null;
-            state.explainError = null;
-            try {
-                const rows = await sampleRowsForTypes(conn, state.querySql);
-                state.generatedCode = generateRunSnippet(state.querySql, rows);
-            } catch (err) {
-                state.generateError = String(err);
-                state.generatedCode = null;
-            } finally {
-                state.queryLoading = false;
-            }
+            state.queryLoading = false;
+        },
+
+        generateSucceeded(state: State, code: string) {
+            state.generatedCode = code;
+            state.queryLoading = false;
+        },
+
+        generateFailed(state: State, err: string) {
+            state.generateError = err;
+            state.generatedCode = null;
+            state.queryLoading = false;
+        },
+
+        // The session moved on (disconnect/reconnect) while a run was in flight — drop the result
+        // but still clear the flag, or the buttons stay disabled forever.
+        queryAborted(state: State) {
+            state.queryLoading = false;
         },
     },
 });
@@ -508,6 +511,79 @@ export function disconnect() {
     store.actions.finalizeDisconnect();
 }
 
+// --- Query orchestration -----------------------------------------------------------------
+//
+// Each one reads querySql from the store at call time and re-reads the store before committing,
+// so a run that outlives its session (disconnect, reconnect elsewhere) can't resurrect results,
+// and nothing typed while a query is in flight gets clobbered by a stale draft.
+
+export async function executeQuery() {
+    const { db: conn, querySql, queryLoading } = store.get();
+    if (!conn || queryLoading) return;
+    store.actions.beginRun();
+    try {
+        const rows = await runQuery(conn, querySql);
+        if (store.get().db !== conn) {
+            store.actions.queryAborted();
+            return;
+        }
+        // A query with its own LIMIT was run uncapped, so there's nothing to trim or warn about.
+        const truncated = !hasLimitClause(querySql) && rows.length > MAX_QUERY_ROWS;
+        const page = truncated ? rows.slice(0, MAX_QUERY_ROWS) : rows;
+        store.actions.runSucceeded({
+            rows: page,
+            columns: page.length ? Object.keys(page[0]) : [],
+            truncated,
+        });
+    } catch (err) {
+        if (store.get().db !== conn) {
+            store.actions.queryAborted();
+            return;
+        }
+        store.actions.runFailed(String(err));
+    }
+}
+
+export async function explainQuery() {
+    const { db: conn, querySql, queryLoading } = store.get();
+    if (!conn || queryLoading) return;
+    store.actions.beginRun();
+    try {
+        const nodes = await explainQueryPlan(conn, querySql);
+        if (store.get().db !== conn) {
+            store.actions.queryAborted();
+            return;
+        }
+        store.actions.explainSucceeded(nodes);
+    } catch (err) {
+        if (store.get().db !== conn) {
+            store.actions.queryAborted();
+            return;
+        }
+        store.actions.explainFailed(String(err));
+    }
+}
+
+export async function generateTypes() {
+    const { db: conn, querySql, queryLoading } = store.get();
+    if (!conn || queryLoading) return;
+    store.actions.beginRun();
+    try {
+        const rows = await sampleRowsForTypes(conn, querySql);
+        if (store.get().db !== conn) {
+            store.actions.queryAborted();
+            return;
+        }
+        store.actions.generateSucceeded(generateRunSnippet(querySql, rows));
+    } catch (err) {
+        if (store.get().db !== conn) {
+            store.actions.queryAborted();
+            return;
+        }
+        store.actions.generateFailed(String(err));
+    }
+}
+
 export const useStore = createUseStore(store);
 
 export const {
@@ -522,9 +598,6 @@ export const {
     selectCell,
     clearSelectedCell,
     setQuerySql,
-    executeQuery,
-    explainQuery,
-    generateTypes,
 } = store.actions;
 
 export const selectConnected = (s: State) => s.status === "connected";
