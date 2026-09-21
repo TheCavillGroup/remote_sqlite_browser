@@ -1,0 +1,29 @@
+name: deploy
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    environment: production # optional: lets you require manual approval in repo settings
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+
+      - name: Build image
+        run: docker compose build
+
+      - name: Deploy
+        run: docker compose up -d 
+
+      - name: Clean up dangling images
+        if: always()
+        run: docker image prune -f
