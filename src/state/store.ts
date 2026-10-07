@@ -97,6 +97,7 @@ let currentUrl : string | null = null;
 let heartbeatTimer : ReturnType<typeof setInterval> | null = null;
 let reconnectTimer : ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempt = 0;
+let rowsSeq = 0;
 
 // Lowest free "Query <n>" so closing a tab frees its number
 function nextQueryTabNumber(tabs : QueryTabState[]) : number {
@@ -201,6 +202,9 @@ function resetTableState(state : State) {
     state.rows = [];
     state.totalRows = 0;
     state.rowsError = null;
+    // An in-flight load from the old session gets dropped, so nothing else would clear these
+    state.rowsLoading = false;
+    state.schemaLoading = false;
     state.selectedCell = null;
 }
 
@@ -270,52 +274,59 @@ const store = createStore({
             resetTableState(state);
         },
 
-        async loadSchema(state : State) {
-            const conn = state.db;
-            if(!conn) return;
+        // No async actions - their draft is taken before the await and committed after,
+        // reverting anything that happened in between (typed SQL, queryLoading). loadTable etc do the async part
+        beginLoadSchema(state : State) {
             state.schemaLoading = true;
             state.schemaError = null;
-            try {
-                state.schemaObjects = await listSchemaObjects(conn);
-            } catch(err) {
-                state.schemaError = String(err);
-            } finally {
-                state.schemaLoading = false;
-            }
         },
 
-        async toggleStructureColumns(state : State, name : string) {
-            if(state.structureColumns[name]) {
-                delete state.structureColumns[name];
-                return;
-            }
-            const conn = state.db;
-            if(!conn) return;
-            state.structureColumns[name] = await getTableSchema(conn, name).catch(() => []);
+        schemaSucceeded(state : State, objects : SchemaObject[]) {
+            state.schemaObjects = objects;
+            state.schemaLoading = false;
         },
 
-        async loadTable(state : State, name : string) {
+        schemaFailed(state : State, err : string) {
+            state.schemaError = err;
+            state.schemaLoading = false;
+        },
+
+        collapseStructureColumns(state : State, name : string) {
+            delete state.structureColumns[name];
+        },
+
+        structureColumnsLoaded(state : State, name : string, columns : ColumnInfo[]) {
+            state.structureColumns[name] = columns;
+        },
+
+        beginLoadTable(state : State, name : string) {
             state.selectedTable = name;
             state.pageOffset = 0;
             state.searchTerm = "";
             state.selectedTableSchema = [];
             state.selectedCell = null;
             state.activeTab = "browse";
-
-            const conn = state.db;
-            if(!conn) return;
-            try {
-                state.selectedTableSchema = await getTableSchema(conn, name);
-            } catch(err) {
-                state.rowsError = String(err);
-            }
-
-            await runRefreshTableRows(state);
         },
 
-        async refreshTableRows(state : State) {
+        tableSchemaSucceeded(state : State, columns : ColumnInfo[]) {
+            state.selectedTableSchema = columns;
+        },
+
+        beginRows(state : State) {
             state.selectedCell = null;
-            await runRefreshTableRows(state);
+            state.rowsLoading = true;
+            state.rowsError = null;
+        },
+
+        rowsSucceeded(state : State, rows : Record<string, unknown>[], count : number) {
+            state.rows = rows;
+            state.totalRows = count;
+            state.rowsLoading = false;
+        },
+
+        rowsFailed(state : State, err : string) {
+            state.rowsError = err;
+            state.rowsLoading = false;
         },
 
         setActiveTab(state : State, tab : Tab) {
@@ -438,28 +449,64 @@ const store = createStore({
     }
 });
 
-// Takes the draft directly, only ever called from inside another action
-async function runRefreshTableRows(state : State) {
-    const conn = state.db;
-    const table = state.selectedTable;
+export async function loadSchema() {
+    const conn = store.get().db;
+    if(!conn) return;
+    store.actions.beginLoadSchema();
+    try {
+        const objects = await listSchemaObjects(conn);
+        if(store.get().db !== conn) return;
+        store.actions.schemaSucceeded(objects);
+    } catch(err) {
+        if(store.get().db !== conn) return;
+        store.actions.schemaFailed(String(err));
+    }
+}
+
+export async function toggleStructureColumns(name : string) {
+    const { db: conn, structureColumns } = store.get();
+    if(structureColumns[name]) return store.actions.collapseStructureColumns(name);
+    if(!conn) return;
+    const columns = await getTableSchema(conn, name).catch(() => []);
+    if(store.get().db !== conn) return;
+    store.actions.structureColumnsLoaded(name, columns);
+}
+
+export async function loadTable(name : string) {
+    store.actions.beginLoadTable(name);
+    const conn = store.get().db;
+    if(!conn) return;
+    try {
+        const columns = await getTableSchema(conn, name);
+        if(store.get().db !== conn || store.get().selectedTable !== name) return;
+        store.actions.tableSchemaSucceeded(columns);
+    } catch(err) {
+        if(store.get().db !== conn || store.get().selectedTable !== name) return;
+        store.actions.rowsFailed(String(err));
+    }
+
+    await refreshTableRows();
+}
+
+// Only the latest request commits, so a slow page/search can't land over a newer one
+export async function refreshTableRows() {
+    const { db: conn, selectedTable: table, selectedTableSchema, pageSize, pageOffset, searchTerm } = store.get();
     if(!conn || !table) return;
 
-    state.rowsLoading = true;
-    state.rowsError = null;
+    const seq = ++rowsSeq;
+    store.actions.beginRows();
     try {
-        const columns = state.selectedTableSchema.map(x => x.name);
-        const opts = { limit: state.pageSize, offset: state.pageOffset };
-        const term = state.searchTerm;
+        const columns = selectedTableSchema.map(x => x.name);
+        const opts = { limit: pageSize, offset: pageOffset };
         const [newRows, count] = await Promise.all([
-            searchTableRows(conn, table, columns, term, opts),
-            searchTableRowCount(conn, table, columns, term)
+            searchTableRows(conn, table, columns, searchTerm, opts),
+            searchTableRowCount(conn, table, columns, searchTerm)
         ]);
-        state.rows = newRows;
-        state.totalRows = count;
+        if(seq !== rowsSeq || store.get().db !== conn) return;
+        store.actions.rowsSucceeded(newRows, count);
     } catch(err) {
-        state.rowsError = String(err);
-    } finally {
-        state.rowsLoading = false;
+        if(seq !== rowsSeq || store.get().db !== conn) return;
+        store.actions.rowsFailed(String(err));
     }
 }
 
@@ -546,7 +593,7 @@ async function attemptReconnect(gen : number) {
         reconnectAttempt = 0;
         store.actions.reconnectSucceeded(r);
         startHeartbeat(gen);
-        if(store.get().selectedTable) store.actions.refreshTableRows();
+        if(store.get().selectedTable) refreshTableRows();
     } catch {
         if(gen !== connGen) return;
         reconnectAttempt += 1;
@@ -662,10 +709,6 @@ export const useStore = createUseStore(store);
 
 export const {
     setWsUrl,
-    loadSchema,
-    toggleStructureColumns,
-    loadTable,
-    refreshTableRows,
     setActiveTab,
     setSearchTerm,
     setPageOffset,

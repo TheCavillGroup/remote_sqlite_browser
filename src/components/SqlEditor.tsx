@@ -5,7 +5,8 @@ import { keymap, tooltips } from "@codemirror/view";
 import { sql, SQLite } from "@codemirror/lang-sql";
 
 interface Props {
-    value: string;
+    // Only read on mount, key the editor to swap docs. Syncing it back in raced the store and looped
+    initialValue: string;
     onChange(value: string): void;
     onRun(): void;
     /** table/view -> column names */
@@ -21,7 +22,7 @@ const EDITOR_THEME = EditorView.theme({
 
 const sqlExtension = (schema : Record<string, string[]>) => sql({ dialect: SQLite, schema, upperCaseKeywords: true });
 
-export default function SqlEditor({ value, onChange, onRun, schema } : Props) {
+export default function SqlEditor({ initialValue, onChange, onRun, schema } : Props) {
     const parentRef = useRef<HTMLDivElement | null>(null);
     const viewRef = useRef<EditorView | null>(null);
     const langCompartment = useRef(new Compartment());
@@ -38,7 +39,7 @@ export default function SqlEditor({ value, onChange, onRun, schema } : Props) {
         const view = new EditorView({
             parent: parentRef.current!,
             state: EditorState.create({
-                doc: value,
+                doc: initialValue,
                 extensions: [
                     basicSetup,
                     Prec.highest(keymap.of([{
@@ -73,13 +74,6 @@ export default function SqlEditor({ value, onChange, onRun, schema } : Props) {
         }
         viewRef.current?.dispatch({ effects: langCompartment.current.reconfigure(sqlExtension(schema)) });
     }, [schema]);
-
-    useEffect(() => {
-        const view = viewRef.current;
-        if(!view) return;
-        const current = view.state.doc.toString();
-        if(value !== current) view.dispatch({ changes: { from: 0, to: current.length, insert: value } });
-    }, [value]);
 
     return <div ref={parentRef} class="overflow-hidden rounded border border-gray-300 focus-within:border-blue-500"/>
 }

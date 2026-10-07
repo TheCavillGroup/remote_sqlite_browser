@@ -212,7 +212,7 @@ function QueryEditorPanel({ tabId } : Record<"tabId", string>) {
 
     return <>
         <SqlEditor
-            value={querySql}
+            initialValue={querySql}
             onChange={sql => setQuerySql(tabId, sql)}
             onRun={() => executeQuery(tabId)}
             schema={schemaMap}
