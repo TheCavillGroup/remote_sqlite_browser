@@ -12,7 +12,6 @@ A browser-based admin UI for any database exposed by `@tangerie/remote-sqlite/se
 deno task dev      # start Vite dev server on :5173
 deno task build    # production build -> dist/
 deno task preview  # preview the production build locally
-deno fmt            # format (no dedicated task, use Deno's built-in)
 deno lint           # lint (no dedicated task, use Deno's built-in)
 ```
 
